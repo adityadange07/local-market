@@ -148,6 +148,8 @@ Status: **Implemented**. Spring method security and a database-backed `Permissio
 - **Tests:** valid/invalid/expired/replay, non-MFA token denied admin route, recovery audit. **Acceptance criteria:** Admin functions unavailable until MFA complete. **DoD:** Shared definition; operator recovery documented.
 - **Priority:** P1. **Estimate:** 16 h.
 
+Status: **Implemented**. MVP uses encrypted TOTP seeds, database-enforced step replay prevention, ten hashed one-time recovery codes, and a restricted MFA event log. Elevated admin access is represented by a five-minute step-up JWT and checked through `PermissionAuthorization.hasAdminPermission`.
+
 ## LSOS-019 — Audit event model and sensitive-action logging
 
 - **Epic:** Identity and Tenancy. **Description:** Record actor, scope, action, object, time, correlation, and redacted change summary. **Business value:** Supports accountability and incident response.

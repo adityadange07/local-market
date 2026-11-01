@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Base64;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -50,6 +51,9 @@ import javax.crypto.spec.SecretKeySpec;
 import in.localshop.os.identity.JdbcOtpChallengeRepository;
 import in.localshop.os.identity.IdentityAccountService;
 import in.localshop.os.identity.AuthTokenService;
+import in.localshop.os.identity.AdminMfaService;
+import in.localshop.os.identity.AdminMfaTotp;
+import in.localshop.os.identity.MfaAuthenticationException;
 import in.localshop.os.identity.InvalidRefreshTokenException;
 import in.localshop.os.identity.OtpChallenge;
 import in.localshop.os.identity.OtpChallengeService;
@@ -131,13 +135,18 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE refresh_tokens, auth_sessions, otp_rate_limits, otp_challenges, "
-                + "stores, tenant_members, tenants, user_roles, users");
+        migrationJdbc.execute("TRUNCATE TABLE admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, "
+                + "refresh_tokens, auth_sessions, otp_rate_limits, otp_challenges, stores, tenant_members, "
+                + "tenants, user_roles, users");
 
         insertUser(USER_A, "+15550000001");
         insertUser(USER_B, "+15550000002");
         insertUser(USER_C, "+15550000003");
         insertUser(PLATFORM_ADMIN, "+15550000004");
+        migrationJdbc.update(
+                "INSERT INTO user_roles (user_id, role_id, role_scope) "
+                        + "SELECT ?, id, 'GLOBAL' FROM roles WHERE code = 'PLATFORM_ADMIN'",
+                PLATFORM_ADMIN);
 
         insertTenant(TENANT_A, "Shop A", "APPROVED", USER_A, PLATFORM_ADMIN);
         insertTenant(TENANT_B, "Shop B", "PENDING_APPROVAL", USER_B, null);
@@ -502,7 +511,9 @@ class TenantRlsIntegrationTest {
                 .issuedAt(Instant.now())
                 .expiresAt(Instant.now().plusSeconds(600))
                 .build();
-        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+        JwtAuthenticationToken deviceAuthentication = new JwtAuthenticationToken(jwt);
+        deviceAuthentication.setAuthenticated(true);
+        SecurityContextHolder.getContext().setAuthentication(deviceAuthentication);
         try {
             tokenService.revokeDeviceSessions("device_0123456789");
         } finally {
@@ -543,6 +554,88 @@ class TenantRlsIntegrationTest {
                 "UPDATE tenant_members SET status = 'SUSPENDED' WHERE tenant_id = ? AND user_id = ?",
                 TENANT_A, USER_A);
         assertThat(authorization.hasTenant(authentication, TENANT_A, "tenant.store.read")).isFalse();
+
+        var adminJwt = Jwt.withTokenValue("mfa-step-up")
+                .header("alg", "none")
+                .subject(PLATFORM_ADMIN.toString())
+                .claim("amr", List.of("sms", "totp"))
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(300))
+                .build();
+        var adminAuthentication = new JwtAuthenticationToken(adminJwt);
+        adminAuthentication.setAuthenticated(true);
+        assertThat(authorization.hasAdminPermission(adminAuthentication, "platform.config.manage")).isTrue();
+
+        var adminWithoutMfaJwt = Jwt.withTokenValue("plain-admin")
+                .header("alg", "none")
+                .subject(PLATFORM_ADMIN.toString())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(600))
+                .build();
+        var adminWithoutMfa = new JwtAuthenticationToken(adminWithoutMfaJwt);
+        adminWithoutMfa.setAuthenticated(true);
+        assertThat(authorization.hasAdminPermission(adminWithoutMfa, "platform.config.manage")).isFalse();
+    }
+
+    @Test
+    void adminMfaEnrollmentTotpReplayRecoveryAndStepUpTokenAreEnforced() {
+        AdjustableClock clock = new AdjustableClock(Instant.now());
+        AuthTokenService tokenService = authTokenService(clock, Duration.ofDays(30));
+        byte[] encryptionKey = new byte[32];
+        java.util.Arrays.fill(encryptionKey, (byte) 0x5a);
+        AdminMfaService mfaService = new AdminMfaService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                tokenService, new SecureRandom(), clock, Base64.getEncoder().encodeToString(encryptionKey));
+        Jwt adminJwt = Jwt.withTokenValue("admin-login")
+                .header("alg", "none")
+                .subject(PLATFORM_ADMIN.toString())
+                .issuedAt(clock.instant())
+                .expiresAt(clock.instant().plusSeconds(600))
+                .build();
+        JwtAuthenticationToken adminAuthentication = new JwtAuthenticationToken(adminJwt, List.of());
+        adminAuthentication.setAuthenticated(true);
+        SecurityContextHolder.getContext().setAuthentication(adminAuthentication);
+        try {
+            var enrollment = mfaService.startEnrollment(PLATFORM_ADMIN);
+            byte[] seed = AdminMfaTotp.decodeSecret(enrollment.secret());
+            String enrollmentCode = AdminMfaTotp.code(seed, clock.instant());
+            var completed = mfaService.completeEnrollment(PLATFORM_ADMIN, enrollmentCode);
+            assertThat(completed.recoveryCodes()).hasSize(10);
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT secret_ciphertext FROM admin_mfa_credentials WHERE user_id = ?", byte[].class, PLATFORM_ADMIN))
+                    .isNotEqualTo(seed);
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT count(*) FROM admin_mfa_recovery_codes WHERE user_id = ? AND used_at IS NULL",
+                    Long.class, PLATFORM_ADMIN)).isEqualTo(10L);
+            assertThat(jwtDecoder().decode(completed.stepUpSession().accessToken()).getClaimAsStringList("amr"))
+                    .contains("totp");
+            assertThrows(MfaAuthenticationException.class,
+                    () -> mfaService.verify(PLATFORM_ADMIN, enrollmentCode));
+
+            clock.advance(Duration.ofSeconds(30));
+            String nextCode = AdminMfaTotp.code(seed, clock.instant());
+            var verified = mfaService.verify(PLATFORM_ADMIN, nextCode);
+            assertThat(jwtDecoder().decode(verified.accessToken()).getClaimAsStringList("amr"))
+                    .containsExactly("sms", "totp");
+            String recoveryCode = completed.recoveryCodes().getFirst();
+            assertThat(mfaService.recover(PLATFORM_ADMIN, recoveryCode).accessToken()).isNotBlank();
+            assertThrows(MfaAuthenticationException.class,
+                    () -> mfaService.recover(PLATFORM_ADMIN, recoveryCode));
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT count(*) FROM admin_mfa_events WHERE user_id = ? AND event_type = 'RECOVERY_CODE_USED'",
+                    Long.class, PLATFORM_ADMIN)).isEqualTo(1L);
+            for (int attempt = 0; attempt < 4; attempt++) {
+                assertThrows(MfaAuthenticationException.class,
+                        () -> mfaService.verify(PLATFORM_ADMIN, "not-a-code"));
+            }
+            assertThrows(MfaAuthenticationException.class,
+                    () -> mfaService.verify(PLATFORM_ADMIN, AdminMfaTotp.code(seed, clock.instant())));
+            clock.advance(Duration.ofMinutes(15));
+            assertThat(mfaService.verify(PLATFORM_ADMIN, AdminMfaTotp.code(seed, clock.instant()))
+                    .accessToken()).isNotBlank();
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
     private OtpRateLimitService rateLimitService() {

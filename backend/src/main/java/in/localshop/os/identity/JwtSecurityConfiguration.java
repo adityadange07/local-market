@@ -94,10 +94,11 @@ public class JwtSecurityConfiguration {
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/api/v1/auth/otp/**", "/api/v1/auth/tokens/refresh",
-                                "/api/v1/auth/tokens/revoke", "/api/v1/auth/admin/mfa/**",
+                                "/api/v1/auth/tokens/revoke",
                                 "/actuator/health", "/actuator/health/**", "/v3/api-docs/**",
                                 "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                        .requestMatchers("/api/v1/auth/tokens/revoke-device").authenticated()
+                        .requestMatchers("/api/v1/auth/tokens/revoke-device",
+                                "/api/v1/auth/admin/mfa/**").authenticated()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(Customizer.withDefaults()))
                 .exceptionHandling(exceptions -> exceptions

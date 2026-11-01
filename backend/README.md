@@ -21,12 +21,14 @@ Each feature owns its application/domain logic and exposes deliberate interfaces
 
 After LSOS-012, Compose provisions `localshop_runtime` plus the `localshop_app` login. The API uses `localshop_app` for runtime queries; Flyway uses the separate `localshop` migration login locally. In production, run migrations in the release pipeline and set `DB_MIGRATIONS_ENABLED=false` for API processes.
 
-Use Java 21 and Maven 3.6.3 or later. Set independent `OTP_HMAC_SECRET` and `JWT_SIGNING_SECRET` values to Base64 output from `openssl rand -base64 32`; both are mandatory and must be managed as secrets outside local development:
+Use Java 21 and Maven 3.6.3 or later. Set independent `OTP_HMAC_SECRET`, `JWT_SIGNING_SECRET`, and `MFA_ENCRYPTION_KEY` values to Base64 output from `openssl rand -base64 32`; all are mandatory and must be managed as secrets outside local development:
 
 ```sh
 cd backend
 export OTP_HMAC_SECRET="$(openssl rand -base64 32)"
 export JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
+export MFA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export MFA_ENCRYPTION_KEY="$(openssl rand -base64 32)"
 SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
 ```
 

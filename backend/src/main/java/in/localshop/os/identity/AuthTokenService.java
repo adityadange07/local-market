@@ -151,7 +151,8 @@ public class AuthTokenService {
     @PreAuthorize("@permissionAuthorization.hasGlobal(authentication, 'customer.devices.manage')")
     public void revokeDeviceSessions(String deviceId) {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+        if (authentication == null || !authentication.isAuthenticated()
+                || !(authentication.getPrincipal() instanceof Jwt jwt)) {
             throw new AccessDeniedException("Authenticated user required.");
         }
         final UUID userId;
@@ -280,6 +281,23 @@ public class AuthTokenService {
         String accessToken = jwtEncoder.encode(JwtEncoderParameters.from(
                 JwsHeader.with(MacAlgorithm.HS256).build(), claims)).getTokenValue();
         return new TokenResponse(accessToken, refreshToken, "Bearer", accessTokenTtl.toSeconds(), refreshExpiry);
+    }
+
+    AdminMfaTokenResponse issueMfaStepUpToken(UUID userId) {
+        Instant now = clock.instant();
+        Instant expiresAt = now.plus(Duration.ofMinutes(5));
+        JwtClaimsSet claims = JwtClaimsSet.builder()
+                .issuer(issuer)
+                .audience(List.of(audience))
+                .subject(userId.toString())
+                .issuedAt(now)
+                .expiresAt(expiresAt)
+                .id(UUID.randomUUID().toString())
+                .claim("amr", List.of("sms", "totp"))
+                .build();
+        String accessToken = jwtEncoder.encode(JwtEncoderParameters.from(
+                JwsHeader.with(MacAlgorithm.HS256).build(), claims)).getTokenValue();
+        return new AdminMfaTokenResponse(accessToken, "Bearer", Duration.between(now, expiresAt).toSeconds());
     }
 
     private String createRefreshToken(UUID sessionId) {

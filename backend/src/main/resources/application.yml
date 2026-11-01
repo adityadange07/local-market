@@ -37,6 +37,8 @@ localshop:
       signing-secret: ${JWT_SIGNING_SECRET}
       access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:10m}
       refresh-session-ttl: ${JWT_REFRESH_SESSION_TTL:30d}
+    mfa:
+      encryption-key: ${MFA_ENCRYPTION_KEY}
 springdoc:
   api-docs:
     enabled: ${OPENAPI_ENABLED:false}

@@ -80,6 +80,15 @@ public class PermissionAuthorization {
         }));
     }
 
+    public boolean hasAdminPermission(Authentication authentication, String permission) {
+        if (!(authentication != null && authentication.getPrincipal() instanceof Jwt jwt)) {
+            return false;
+        }
+        List<String> authenticationMethods = jwt.getClaimAsStringList("amr");
+        return authenticationMethods != null && authenticationMethods.contains("totp")
+                && hasGlobal(authentication, permission);
+    }
+
     private static UUID authenticatedUserId(Authentication authentication) {
         if (authentication == null || !authentication.isAuthenticated()
                 || !(authentication.getPrincipal() instanceof Jwt jwt)) {

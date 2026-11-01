@@ -20,6 +20,8 @@ users ─< user_roles >─ roles ─< role_permissions >─ permissions
   ├─< customer_addresses
   ├─< otp_challenges (phone/purpose/expiry/attempt-bound authentication challenges)
   ├─< auth_sessions ─< refresh_tokens (rotating token family)
+  ├─0..1 admin_mfa_credentials ─< admin_mfa_recovery_codes
+  │                         └─< admin_mfa_events (restricted, append-only)
   ├─< carts ─< cart_items >─ product_variants
   ├─< orders ─< order_items; orders ─< order_status_history
   │      ├─< payment_records
@@ -38,6 +40,9 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 | `otp_rate_limits` | HMAC-keyed request counters for phone, IP, and device windows | composite dimension/hash key; atomic upsert; stale bucket cleanup after one day |
 | `auth_sessions` | User/device refresh session family with fixed expiry and revocation state | user/expiry index; device ID stored as keyed hash; family is revoked on replay/logout |
 | `refresh_tokens` | One-time token hashes belonging to an auth session | unique SHA-256 hash; consumed/replacement linkage; session/expiry indexes; no raw token persistence |
+| `admin_mfa_credentials` | Optional platform-admin TOTP seed and verification state | AES-GCM encrypted seed; pending enrollment expiry; monotonic verified step and bounded lockout fields; self-only RLS |
+| `admin_mfa_recovery_codes` | One-time high-entropy recovery credentials | SHA-256 only; unique per user; used timestamp; self-only RLS |
+| `admin_mfa_events` | MFA enrollment, success, recovery, and failure events | append-only; runtime insert-only; self actor RLS; user/time index |
 | `roles`, `permissions` | Global RBAC definitions with explicit role scope | unique role code; composite `(id, scope)` key for scoped FKs |
 | `user_roles` | Global-only user grants (`CUSTOMER`, support, platform admin) | unique user/role; scope check/FK requires `GLOBAL`; assignment audit fields |
 | `role_permissions` | Global permission mapping | unique role/permission |

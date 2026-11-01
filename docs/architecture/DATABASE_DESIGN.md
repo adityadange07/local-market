@@ -43,6 +43,7 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 | `admin_mfa_credentials` | Optional platform-admin TOTP seed and verification state | AES-GCM encrypted seed; pending enrollment expiry; monotonic verified step and bounded lockout fields; self-only RLS |
 | `admin_mfa_recovery_codes` | One-time high-entropy recovery credentials | SHA-256 only; unique per user; used timestamp; self-only RLS |
 | `admin_mfa_events` | MFA enrollment, success, recovery, and failure events | append-only; runtime insert-only; self actor RLS; user/time index |
+| `audit_logs` | Authenticated actor, scope, action/object, correlation ID, and redacted change summary | JSONB object; append-only runtime grants; forced RLS; actor/tenant/object/time indexes; reads require MFA permission |
 | `roles`, `permissions` | Global RBAC definitions with explicit role scope | unique role code; composite `(id, scope)` key for scoped FKs |
 | `user_roles` | Global-only user grants (`CUSTOMER`, support, platform admin) | unique user/role; scope check/FK requires `GLOBAL`; assignment audit fields |
 | `role_permissions` | Global permission mapping | unique role/permission |

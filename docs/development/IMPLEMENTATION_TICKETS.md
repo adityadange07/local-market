@@ -158,6 +158,8 @@ Status: **Implemented**. MVP uses encrypted TOTP seeds, database-enforced step r
 - **Tests:** required actions emit one event; no secret fields; unauthorized read blocked. **Acceptance criteria:** Sensitive mutation is traceable to actor and tenant. **DoD:** Shared definition; retention owner noted.
 - **Priority:** P1. **Estimate:** 12 h.
 
+Status: **Implemented**. V9 adds forced-RLS, append-only audit storage; `AuditEventService` records the current actor and correlation ID in the business transaction, `AuditRedactor` bounds and sanitizes JSON summaries, and audit reads require an MFA-verified platform permission. MFA lifecycle actions now emit shared audit records. Future approval/payment/order/team mutations will call this service as those modules are implemented.
+
 ## LSOS-020 — Seller onboarding and shop approval APIs
 
 - **Epic:** Shop Operations. **Description:** Let seller apply and admin approve/reject with recorded reason. **Business value:** Brings pilot shops onto a controlled marketplace.

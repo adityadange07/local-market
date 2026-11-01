@@ -54,6 +54,9 @@ import in.localshop.os.identity.AuthTokenService;
 import in.localshop.os.identity.AdminMfaService;
 import in.localshop.os.identity.AdminMfaTotp;
 import in.localshop.os.identity.MfaAuthenticationException;
+import in.localshop.os.audit.AuditEventService;
+import in.localshop.os.audit.AuditRedactor;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import in.localshop.os.identity.InvalidRefreshTokenException;
 import in.localshop.os.identity.OtpChallenge;
 import in.localshop.os.identity.OtpChallengeService;
@@ -135,7 +138,7 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, "
+        migrationJdbc.execute("TRUNCATE TABLE audit_logs, admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, "
                 + "refresh_tokens, auth_sessions, otp_rate_limits, otp_challenges, stores, tenant_members, "
                 + "tenants, user_roles, users");
 
@@ -583,9 +586,14 @@ class TenantRlsIntegrationTest {
         AuthTokenService tokenService = authTokenService(clock, Duration.ofDays(30));
         byte[] encryptionKey = new byte[32];
         java.util.Arrays.fill(encryptionKey, (byte) 0x5a);
+        ObjectMapper objectMapper = new ObjectMapper();
+        AuditEventService auditEvents = new AuditEventService(
+                runtimeJdbc, contextHolder, databaseContext, new AuditRedactor(objectMapper),
+                new DataSourceTransactionManager(runtimeDataSource), clock);
         AdminMfaService mfaService = new AdminMfaService(
                 runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
-                tokenService, new SecureRandom(), clock, Base64.getEncoder().encodeToString(encryptionKey));
+                tokenService, auditEvents, new SecureRandom(), clock,
+                Base64.getEncoder().encodeToString(encryptionKey));
         Jwt adminJwt = Jwt.withTokenValue("admin-login")
                 .header("alg", "none")
                 .subject(PLATFORM_ADMIN.toString())
@@ -624,6 +632,11 @@ class TenantRlsIntegrationTest {
             assertThat(migrationJdbc.queryForObject(
                     "SELECT count(*) FROM admin_mfa_events WHERE user_id = ? AND event_type = 'RECOVERY_CODE_USED'",
                     Long.class, PLATFORM_ADMIN)).isEqualTo(1L);
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT count(*) FROM audit_logs WHERE actor_user_id = ? AND action_code LIKE 'admin.mfa.%'",
+                    Long.class, PLATFORM_ADMIN)).isEqualTo(6L);
+            assertThrows(DataAccessException.class,
+                    () -> runtimeJdbc.update("DELETE FROM audit_logs WHERE actor_user_id = ?", PLATFORM_ADMIN));
             for (int attempt = 0; attempt < 4; attempt++) {
                 assertThrows(MfaAuthenticationException.class,
                         () -> mfaService.verify(PLATFORM_ADMIN, "not-a-code"));

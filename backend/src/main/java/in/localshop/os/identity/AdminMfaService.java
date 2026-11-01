@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 import javax.crypto.Cipher;
@@ -20,6 +21,7 @@ import in.localshop.os.tenancy.TenantActorScope;
 import in.localshop.os.tenancy.TenantContextHolder;
 import in.localshop.os.tenancy.TenantDatabaseContext;
 import in.localshop.os.tenancy.TenantExecutionContext;
+import in.localshop.os.audit.AuditEventService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.access.AccessDeniedException;
@@ -51,6 +53,7 @@ public class AdminMfaService {
     private final TenantDatabaseContext databaseContext;
     private final TransactionTemplate transactionTemplate;
     private final AuthTokenService tokenService;
+    private final AuditEventService auditEventService;
     private final SecureRandom secureRandom;
     private final Clock clock;
     private final byte[] encryptionKey;
@@ -61,6 +64,7 @@ public class AdminMfaService {
             TenantDatabaseContext databaseContext,
             PlatformTransactionManager transactionManager,
             AuthTokenService tokenService,
+            AuditEventService auditEventService,
             SecureRandom secureRandom,
             Clock clock,
             @Value("${localshop.security.mfa.encryption-key}") String encodedEncryptionKey) {
@@ -69,6 +73,7 @@ public class AdminMfaService {
         this.databaseContext = databaseContext;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.tokenService = tokenService;
+        this.auditEventService = auditEventService;
         this.secureRandom = secureRandom;
         this.clock = clock;
         try {
@@ -247,6 +252,9 @@ public class AdminMfaService {
     private void recordEvent(UUID userId, String eventType, Instant at) {
         jdbcTemplate.update("INSERT INTO admin_mfa_events (id, user_id, event_type, created_at) VALUES (?, ?, ?, ?)",
                 UUID.randomUUID(), userId, eventType, Timestamp.from(at));
+        auditEventService.recordCurrent(
+                "admin.mfa." + eventType.toLowerCase(java.util.Locale.ROOT),
+                "admin_mfa_credential", userId.toString(), Map.of("eventType", eventType));
     }
 
     private boolean isLocked(UUID userId, Instant now) {

@@ -8,6 +8,12 @@ Issue short-lived signed access JWTs with issuer, audience, subject, expiry, tok
 
 ## Authorization and tenant boundaries
 
+V4 applies RLS to users, global user-role grants, tenants, memberships, and stores. Static role/permission reference tables are read-only to the runtime group and are not RLS-protected. The local app login is a member of `localshop_runtime`, which is neither a table owner nor `BYPASSRLS`; it receives only the grants needed by the API. In production, run Flyway as a separate release migration step with a restricted migration principal (which may have `BYPASSRLS` for controlled migration work), then disable app-startup migrations and use runtime-only credentials.
+
+V4 applies `ENABLE` and `FORCE ROW LEVEL SECURITY` to the initial identity/grant, tenant, membership, and store tables. The local runtime login is a member of `localshop_runtime`, which is neither a table owner nor `BYPASSRLS`; it receives only the grants needed by the API. In production, run Flyway as a separate release migration step with a migration principal, then disable app-startup migrations and use runtime-only credentials.
+
+The MVP identity and authorization model is finalized in [IDENTITY_TENANCY_DECISIONS.md](IDENTITY_TENANCY_DECISIONS.md): global roles use `user_roles`; each tenant membership has one tenant-scoped role. The database context is derived by the backend and set transaction-locally. RLS protects tenant-owned reads/writes, while customer-owned order/review policies and public approved-store reads are narrowly defined. RLS context variables do not protect against arbitrary SQL executed by the shared runtime role, so parameterized queries and least privilege remain required.
+
 Use deny-by-default role/permission checks at route and service layers. Membership is resolved server-side and checked for active status. Every tenant resource access checks tenant ownership; never trust a path/body `tenant_id`. Apply PostgreSQL RLS to tenant data using transaction-local context and `USING`/`WITH CHECK`. Connection pool cleanup, asynchronous jobs, migrations, and admin paths require dedicated tests. Admin cross-tenant access is explicit, narrow, logged, and never granted to normal seller/customer roles.
 
 ## Data protection

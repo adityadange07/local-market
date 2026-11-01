@@ -8,7 +8,10 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
   flyway:
-    enabled: true
+    enabled: ${DB_MIGRATIONS_ENABLED:true}
+    url: ${DB_MIGRATION_URL:${DB_URL}}
+    user: ${DB_MIGRATION_USERNAME:${DB_USERNAME}}
+    password: ${DB_MIGRATION_PASSWORD:${DB_PASSWORD}}
     locations: classpath:db/migration
     clean-disabled: true
     validate-on-migrate: true

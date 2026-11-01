@@ -32,12 +32,12 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 | Table | Ownership / important relationships | Core constraints and indexes |
 |---|---|---|
 | `users` | Global identity, referenced by all actor records | unique normalized phone; status index; timestamps |
-| `roles`, `permissions` | Global RBAC definitions | unique role/permission key |
-| `user_roles` | Global or explicitly scoped role grant | unique user/role/scope tuple; FK constraints |
+| `roles`, `permissions` | Global RBAC definitions with explicit role scope | unique role code; composite `(id, scope)` key for scoped FKs |
+| `user_roles` | Global-only user grants (`CUSTOMER`, support, platform admin) | unique user/role; scope check/FK requires `GLOBAL`; assignment audit fields |
 | `role_permissions` | Global permission mapping | unique role/permission |
-| `tenants` | Shop tenant; lifecycle/status | unique internal slug/key; status index |
-| `tenant_members` | Tenant + user membership | unique tenant/user; tenant and user indexes; role/status |
-| `stores` | `tenant_id`, one MVP store per tenant | unique tenant; unique normalized public slug; published/status indexes |
+| `tenants` | Shop tenant; onboarding/approval lifecycle, review actor and reason | status/creation index; review actor FK; actor/time pairing check |
+| `tenant_members` | Tenant + user membership; one tenant-scoped role per membership | unique tenant/user; scope check/FK requires `TENANT`; joined-at and status checks; user/status index |
+| `stores` | `tenant_id`, one MVP store per tenant | unique tenant; unique normalized public slug; `(tenant_id,id)` composite key; status/update index |
 | `store_addresses` | `tenant_id`, store FK | store/tenant composite ownership; PostGIS geography index; address purpose |
 | `store_hours` | `tenant_id`, store FK | unique store/day/time-window as domain allows; tenant/store index |
 | `categories` | Platform-managed taxonomy; optional parent | unique slug; parent FK; active/sort index |
@@ -65,6 +65,12 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 
 ## Composite ownership and RLS
 
+V4 applies RLS to user identities, global user-role grants, tenants, memberships, and stores. Static `roles`, `permissions`, and `role_permissions` reference data remains outside RLS and is read-only to the runtime group. The `localshop_runtime` database group receives explicit table privileges for identity reads/inserts, self customer-role provisioning, and tenant-scoped CRUD. Production must provision the same non-owner `NOBYPASSRLS` group and a separate migration principal before applying V4. The migration principal may have `BYPASSRLS` for controlled schema/data migrations but must never be used by API processes. The production release pipeline applies migrations with that principal, then starts the API with `DB_MIGRATIONS_ENABLED=false` and runtime-only credentials.
+
+V4 also applies RLS to global identity/grant tables and grants the `localshop_runtime` database group only explicit table permissions: identity reads/inserts, self customer-role provisioning, and tenant-scoped CRUD. Production must provision the same non-owner `NOBYPASSRLS` group and a separate migration principal before applying V4. The production release pipeline applies migrations with the migration principal, then starts the API with `DB_MIGRATIONS_ENABLED=false` and runtime-only credentials.
+
+Role scopes, transaction context keys, customer-order access, public read policy, and the migration/runtime role split are specified in [IDENTITY_TENANCY_DECISIONS.md](IDENTITY_TENANCY_DECISIONS.md). In summary, `user_roles` is global-only; tenant roles belong to `tenant_members`. Tenant policies use transaction-local context and fail closed when context is absent. Customer-owned order/review policies permit only the authenticated customer across shop tenants; public policies are read-only and limited to approved/published catalogue data. Runtime credentials must not own protected tables or have `BYPASSRLS`. Any earlier reference to an admin “bypass” means an explicit admin-scoped policy, never the PostgreSQL `BYPASSRLS` privilege. Shared-role custom GUCs are defense in depth, not a boundary against arbitrary SQL under that role.
+
 For tenant-owned references, use composite unique keys/FKs where practical (for example `(tenant_id, id)` on store/product/variant and matching child FK) so a child cannot refer across tenants. Apply RLS to tenant-owned tables: `USING` and `WITH CHECK` compare row tenant to transaction-local tenant context. Public read paths expose only approved/published rows through a controlled query/service policy. Admin bypass is explicit, permission-gated, and audited. Ensure pooled connections reset context transactionally and test missing context, wrong tenant, forged IDs, job execution, and rollback.
 
 ## Indexing and spatial data
@@ -73,4 +79,4 @@ Use GiST on store address geography; query radius/order by distance with bounded
 
 ## Migrations and unresolved details
 
-Create migrations in dependency order: identity/RBAC; tenancy/shop; taxonomy/catalog; inventory; customer/cart/order; payment; subscription/webhook; notification/review/audit. Do not generate every table in one initial migration. Finalize cancellation/restock semantics, cart ownership policy, subscription uniqueness/grace rules, invoice/tax columns, retention, review target rules, and RLS role design in domain review before corresponding migrations. Use expand/contract changes for deployed schema evolution; never use automatic schema creation in production.
+Create migrations in dependency order: identity/RBAC; tenancy/shop; taxonomy/catalog; inventory; customer/cart/order; payment; subscription/webhook; notification/review/audit. Do not generate every table in one initial migration. Identity UUID, role scope, and tenant boundary choices are finalized in [IDENTITY_TENANCY_DECISIONS.md](IDENTITY_TENANCY_DECISIONS.md). Cancellation/restock semantics, cart ownership policy, subscription uniqueness/grace rules, invoice/tax columns, retention, and review target rules remain open for their dependent domain migrations. Use expand/contract changes for deployed schema evolution; never use automatic schema creation in production.

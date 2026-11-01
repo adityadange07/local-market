@@ -1,6 +1,6 @@
 # Local Compose services
 
-This directory provides PostgreSQL 16 with PostGIS and Redis for local development only. Ports bind to loopback and use non-production credentials; the services share a private Compose network. Named volumes preserve data across container recreation.
+This directory provides PostgreSQL 16 with PostGIS and Redis for local development only. Ports bind to loopback and use non-production credentials; the services share a private Compose network. Named volumes preserve data across container recreation. The PostgreSQL bootstrap login is used for local migrations. The application connects through the separate `localshop_app` login, which is not a table owner and has `NOBYPASSRLS`; its privileges are granted to the fixed `localshop_runtime` group role.
 
 ## Start
 
@@ -11,7 +11,13 @@ docker compose -f docker-compose.yml up -d
 docker compose -f docker-compose.yml ps
 ```
 
-The default host ports are PostgreSQL `25433` and Redis `26380` to avoid common local service ports. Override them in `.env` if occupied. PostgreSQL credentials and Redis password are read from `.env`; the defaults are disposable local-development values only. Never reuse them in staging or production.
+The default host ports are PostgreSQL `25433` and Redis `26380` to avoid common local service ports. Override them in `.env` if occupied. PostgreSQL bootstrap/app credentials and Redis password are read from `.env`; defaults are disposable local-development values only. Never reuse them in staging or production.
+
+For a database volume initialized before `postgres-runtime-role.sh` was added, provision/update the runtime login without deleting data:
+
+```sh
+docker compose -f docker-compose.yml exec postgres sh /docker-entrypoint-initdb.d/20-runtime-role.sh
+```
 
 Confirm PostGIS is available:
 
@@ -19,7 +25,7 @@ Confirm PostGIS is available:
 docker compose -f docker-compose.yml exec postgres sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT PostGIS_Full_Version();"'
 ```
 
-PostgreSQL health indicates server readiness; the SQL check confirms the extension.
+PostgreSQL health indicates server readiness; the SQL check confirms the extension. Application-level tenant isolation must use the non-owner runtime login, not the bootstrap account.
 
 ## Stop and reset
 

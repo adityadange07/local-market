@@ -7,11 +7,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-localshop}
       POSTGRES_USER: ${POSTGRES_USER:-localshop}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localshop_dev_password}
+      APP_DB_USERNAME: ${APP_DB_USERNAME:-localshop_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:-localshop_app_dev_password}
     ports:
       - "127.0.0.1:${POSTGRES_HOST_PORT:-25433}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-postgis.sql:ro
+      - ./postgres-runtime-role.sh:/docker-entrypoint-initdb.d/20-runtime-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s

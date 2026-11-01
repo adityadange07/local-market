@@ -94,16 +94,20 @@ jobs:
         working-directory: backend
         env:
           DB_URL: jdbc:postgresql://localhost:25433/localshop
-          DB_USERNAME: localshop
-          DB_PASSWORD: localshop_dev_password
+          DB_USERNAME: localshop_app
+          DB_PASSWORD: localshop_app_dev_password
+          DB_MIGRATION_USERNAME: localshop
+          DB_MIGRATION_PASSWORD: localshop_dev_password
           SPRING_PROFILES_ACTIVE: local
         run: mvn --batch-mode --no-transfer-progress verify
       - name: Generate OpenAPI document
         working-directory: backend
         env:
           DB_URL: jdbc:postgresql://localhost:25433/localshop
-          DB_USERNAME: localshop
-          DB_PASSWORD: localshop_dev_password
+          DB_USERNAME: localshop_app
+          DB_PASSWORD: localshop_app_dev_password
+          DB_MIGRATION_USERNAME: localshop
+          DB_MIGRATION_PASSWORD: localshop_dev_password
           SPRING_PROFILES_ACTIVE: local
           OPENAPI_ENABLED: 'true'
         run: |

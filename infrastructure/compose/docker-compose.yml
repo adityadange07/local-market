@@ -1,0 +1,52 @@
+name: local-shop-os-dev
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.5-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-localshop}
+      POSTGRES_USER: ${POSTGRES_USER:-localshop}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localshop_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-25433}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-postgis.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - local-dev
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-localshop_redis_dev_password}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-26380}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - local-dev
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  local-dev:
+    driver: bridge
+    internal: true

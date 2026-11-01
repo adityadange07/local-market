@@ -1,14 +1,13 @@
 package in.localshop.os.identity;
 
 import jakarta.validation.Valid;
-import java.util.UUID;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.access.prepost.PreAuthorize;
 
 @RestController
 @RequestMapping("/api/v1/auth/tokens")
@@ -32,10 +31,10 @@ public class TokenApiController {
     }
 
     @PostMapping("/revoke-device")
+    @PreAuthorize("@permissionAuthorization.hasGlobal(authentication, 'customer.devices.manage')")
     public ResponseEntity<Void> revokeDevice(
-            @AuthenticationPrincipal Jwt principal,
             @Valid @RequestBody RevokeDeviceSessionsRequest request) {
-        authTokenService.revokeDeviceSessions(UUID.fromString(principal.getSubject()), request.deviceId());
+        authTokenService.revokeDeviceSessions(request.deviceId());
         return ResponseEntity.noContent().build();
     }
 }

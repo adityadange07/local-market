@@ -23,6 +23,11 @@ import org.springframework.security.oauth2.jwt.JwtEncoder;
 import org.springframework.security.oauth2.jwt.JwtEncoderParameters;
 import org.springframework.security.oauth2.jwt.JwsHeader;
 import org.springframework.stereotype.Service;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -143,7 +148,18 @@ public class AuthTokenService {
         });
     }
 
-    public void revokeDeviceSessions(UUID userId, String deviceId) {
+    @PreAuthorize("@permissionAuthorization.hasGlobal(authentication, 'customer.devices.manage')")
+    public void revokeDeviceSessions(String deviceId) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof Jwt jwt)) {
+            throw new AccessDeniedException("Authenticated user required.");
+        }
+        final UUID userId;
+        try {
+            userId = UUID.fromString(jwt.getSubject());
+        } catch (IllegalArgumentException exception) {
+            throw new AccessDeniedException("Authenticated user required.");
+        }
         byte[] deviceHash = hashDeviceId(deviceId);
         Instant now = clock.instant();
         transactionTemplate.executeWithoutResult(status -> {

@@ -138,6 +138,8 @@ These tickets are intentionally scoped as independently reviewable slices. Estim
 - **Tests:** Each role permitted/denied; disabled membership; service method direct invocation denial. **Acceptance criteria:** Unmapped endpoints/actions are inaccessible by default. **DoD:** Shared definition; matrix documented.
 - **Priority:** P0. **Estimate:** 12 h.
 
+Status: **Implemented**. Spring method security and a database-backed `PermissionAuthorization` evaluator are in place for global and active tenant grants. The device-session revocation route and service both require the customer device permission; service user identity comes from the authenticated security context. Automated tests cover permitted/denied global and tenant grants and suspended membership.
+
 ## LSOS-018 — Admin MFA flow
 
 - **Epic:** Identity and Tenancy. **Description:** Require second factor for admin sessions and sensitive changes. **Business value:** Reduces impact of compromised admin credentials.

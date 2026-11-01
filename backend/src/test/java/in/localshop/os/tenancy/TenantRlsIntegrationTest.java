@@ -39,6 +39,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -57,6 +59,7 @@ import in.localshop.os.identity.OtpPurpose;
 import in.localshop.os.identity.OtpRateLimitException;
 import in.localshop.os.identity.OtpRateLimitService;
 import in.localshop.os.identity.OtpVerificationResult;
+import in.localshop.os.identity.PermissionAuthorization;
 import in.localshop.os.identity.SmsProvider;
 import in.localshop.os.identity.TokenResponse;
 
@@ -493,12 +496,53 @@ class TenantRlsIntegrationTest {
         TokenResponse secondOnDevice = tokenService.issue(USER_A, "device_0123456789");
         TokenResponse otherDevice = tokenService.issue(USER_A, "device_9876543210");
 
-        tokenService.revokeDeviceSessions(USER_A, "device_0123456789");
+        var jwt = Jwt.withTokenValue("test-token")
+                .header("alg", "none")
+                .subject(USER_A.toString())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(600))
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+        try {
+            tokenService.revokeDeviceSessions("device_0123456789");
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
 
         assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(firstOnDevice.refreshToken()));
         assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(secondOnDevice.refreshToken()));
         assertThat(tokenService.refresh(otherDevice.refreshToken()).refreshToken())
                 .isNotEqualTo(otherDevice.refreshToken());
+    }
+
+    @Test
+    void permissionEvaluatorResolvesPersistedGlobalAndTenantGrantsAndDeniesStaleMembership() {
+        var jwtA = Jwt.withTokenValue("test-token")
+                .header("alg", "none")
+                .subject(USER_A.toString())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(600))
+                .build();
+        var authentication = new JwtAuthenticationToken(jwtA);
+        assertThat(authentication.getPrincipal()).isInstanceOf(Jwt.class);
+        authentication.setAuthenticated(true);
+        PermissionAuthorization authorization = new PermissionAuthorization(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource));
+
+        assertThat(inContext(context(USER_A, null, TenantActorScope.CUSTOMER), () -> runtimeJdbc.queryForObject(
+                "SELECT count(*) FROM user_roles ur JOIN role_permissions rp ON rp.role_id = ur.role_id "
+                        + "JOIN permissions p ON p.id = rp.permission_id "
+                        + "WHERE ur.user_id = ? AND p.code = 'customer.devices.manage'",
+                Long.class, USER_A))).isEqualTo(1L);
+        assertThat(authorization.hasGlobal(authentication, "customer.devices.manage")).isTrue();
+        assertThat(authorization.hasGlobal(authentication, "platform.config.manage")).isFalse();
+        assertThat(authorization.hasTenant(authentication, TENANT_A, "tenant.subscriptions.manage")).isTrue();
+        assertThat(authorization.hasTenant(authentication, TENANT_B, "tenant.store.manage")).isFalse();
+
+        migrationJdbc.update(
+                "UPDATE tenant_members SET status = 'SUSPENDED' WHERE tenant_id = ? AND user_id = ?",
+                TENANT_A, USER_A);
+        assertThat(authorization.hasTenant(authentication, TENANT_A, "tenant.store.read")).isFalse();
     }
 
     private OtpRateLimitService rateLimitService() {
@@ -566,6 +610,10 @@ class TenantRlsIntegrationTest {
         migrationJdbc.update(
                 "INSERT INTO users (id, phone_e164, phone_verified_at, status) VALUES (?, ?, NOW(), 'ACTIVE')",
                 id, phone);
+        migrationJdbc.update(
+                "INSERT INTO user_roles (user_id, role_id, role_scope) "
+                        + "SELECT ?, id, 'GLOBAL' FROM roles WHERE code = 'CUSTOMER'",
+                id);
     }
 
     private void insertTenant(UUID id, String name, String status, UUID createdBy, UUID reviewer) {

@@ -2,9 +2,9 @@
 
 ## Conventions
 
-Base path `/api/v1`; JSON request/response DTOs; UUID resource identifiers; ISO-8601 timestamps in UTC; currency represented as ISO currency code plus integer minor units; decimal quantities only if product requirements require weighted goods. Do not expose persistence entities. Return a consistent error body with `code`, `message`, `fieldErrors`, and `traceId`; never leak stack traces or secrets. Use cursor or bounded page pagination for list endpoints, documented stable sort keys, and explicit filter allowlists. Idempotency keys are required for checkout and payment-affecting mutations where retry could duplicate effects.
+Base path `/api/v1`; JSON request/response DTOs; UUID resource identifiers; ISO-8601 timestamps in UTC; currency represented as ISO currency code plus integer minor units; decimal quantities only if product requirements require weighted goods. Do not expose persistence entities. Return a consistent error body with `code`, `message`, `fieldErrors`, and `traceId`; return the same server-generated trace identifier in `X-Trace-Id`. Never leak stack traces or secrets. Map validation failures to field-level errors, malformed input to a generic client error, and unexpected failures to a generic 500. Use cursor or bounded page pagination for list endpoints, documented stable sort keys, and explicit filter allowlists. Idempotency keys are required for checkout and payment-affecting mutations where retry could duplicate effects.
 
-OpenAPI is generated from controller contracts and security annotations, reviewed as a compatibility artifact. Breaking changes require a new API version or a documented migration path.
+OpenAPI is generated from controller contracts and security annotations, reviewed as a compatibility artifact. The backend groups version-one endpoints matching `/api/v1/**`; in local development, JSON is served at `/v3/api-docs/v1` and Swagger UI at `/swagger-ui`. Documentation endpoints are disabled by default outside the local profile. Apply bearer security per operation as controllers are implemented rather than globally, because authentication and public marketplace routes differ. Breaking changes require a new API version or a documented migration path.
 
 ## Route groups and representative contracts
 

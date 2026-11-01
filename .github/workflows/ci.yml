@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository-checks:
+    name: Repository checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check required project documentation
+        run: |
+          set -eu
+          test -f README.md
+          test -f CONTRIBUTING.md
+          test -f docs/product/PRODUCT_REQUIREMENTS.md
+          test -f docs/architecture/SYSTEM_ARCHITECTURE.md
+          test -f docs/architecture/DATABASE_DESIGN.md
+          test -f docs/architecture/API_DESIGN.md
+          test -f docs/architecture/SECURITY_ARCHITECTURE.md
+          test -f docs/testing/TEST_STRATEGY.md
+
+      - name: Check tracked files for trailing whitespace
+        run: |
+          set -eu
+          if git grep -nI -E '[[:blank:]]$' -- .; then
+            echo "Trailing whitespace found in tracked files."
+            exit 1
+          else
+            result=$?
+            if [ "$result" -gt 1 ]; then
+              exit "$result"
+            fi
+          fi
+
+      - name: Validate local Compose configuration
+        run: docker compose -f infrastructure/compose/docker-compose.yml config --quiet
+
+      - name: Report application build activation
+        run: |
+          if [ ! -f backend/pom.xml ]; then
+            echo "Backend build job is inactive until backend/pom.xml is added."
+          fi
+          if [ ! -f web/package.json ]; then
+            echo "Web checks are inactive until web/package.json is added."
+          fi
+          if [ ! -f mobile/package.json ]; then
+            echo "Mobile checks are inactive until mobile/package.json is added."
+          fi
+
+  backend:
+    name: Backend (Java 21)
+    if: ${{ hashFiles('backend/pom.xml') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+      - name: Start PostgreSQL/PostGIS
+        run: docker compose -f infrastructure/compose/docker-compose.yml up -d postgres
+      - name: Wait for PostgreSQL readiness
+        run: |
+          set -eu
+          attempt=0
+          until docker compose -f infrastructure/compose/docker-compose.yml exec -T postgres pg_isready -h 127.0.0.1 -U localshop -d localshop; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 30 ]; then
+              docker compose -f infrastructure/compose/docker-compose.yml logs postgres
+              exit 1
+            fi
+            sleep 2
+          done
+      - name: Verify backend
+        working-directory: backend
+        env:
+          DB_URL: jdbc:postgresql://localhost:25433/localshop
+          DB_USERNAME: localshop
+          DB_PASSWORD: localshop_dev_password
+          SPRING_PROFILES_ACTIVE: local
+        run: mvn --batch-mode --no-transfer-progress verify
+      - name: Generate OpenAPI document
+        working-directory: backend
+        env:
+          DB_URL: jdbc:postgresql://localhost:25433/localshop
+          DB_USERNAME: localshop
+          DB_PASSWORD: localshop_dev_password
+          SPRING_PROFILES_ACTIVE: local
+          OPENAPI_ENABLED: 'true'
+        run: |
+          set -eu
+          mkdir -p target
+          mvn --batch-mode --no-transfer-progress spring-boot:run > /tmp/local-shop-os-backend.log 2>&1 &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          attempt=0
+          until curl --fail --silent http://localhost:8080/v3/api-docs/v1 -o target/openapi-v1.json; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 30 ]; then
+              cat /tmp/local-shop-os-backend.log
+              exit 1
+            fi
+            sleep 2
+          done
+      - name: Upload OpenAPI document
+        uses: actions/upload-artifact@v4
+        with:
+          name: openapi-v1
+          path: backend/target/openapi-v1.json
+          if-no-files-found: error
+
+  web:
+    name: Web (React / TypeScript)
+    if: ${{ hashFiles('web/package.json') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked dependencies
+        working-directory: web
+        run: npm ci
+      - name: Lint, typecheck, test, and build
+        working-directory: web
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build
+
+  mobile:
+    name: Mobile (Expo / React Native)
+    if: ${{ hashFiles('mobile/package.json') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install locked dependencies
+        working-directory: mobile
+        run: npm ci
+      - name: Lint, typecheck, test, and build
+        working-directory: mobile
+        run: |
+          npm run lint
+          npm run typecheck
+          npm test
+          npm run build

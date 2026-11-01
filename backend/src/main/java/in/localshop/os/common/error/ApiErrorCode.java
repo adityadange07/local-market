@@ -1,0 +1,15 @@
+package in.localshop.os.common.error;
+
+public enum ApiErrorCode {
+    VALIDATION_FAILED,
+    INVALID_REQUEST,
+    RESOURCE_NOT_FOUND,
+    UNAUTHORIZED,
+    FORBIDDEN,
+    METHOD_NOT_ALLOWED,
+    UNSUPPORTED_MEDIA_TYPE,
+    CONFLICT,
+    RATE_LIMITED,
+    REQUEST_REJECTED,
+    INTERNAL_ERROR
+}

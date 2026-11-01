@@ -19,7 +19,8 @@ OpenAPI is generated from controller contracts and security annotations, reviewe
 
 ## Representative DTOs
 
-- `OtpRequest(phone, purpose)` and `OtpVerify(phone, purpose, code, deviceInfo)`; response contains access token, refresh token material/cookie strategy, expiry, user summary, and required next action. Do not return OTP or internal provider detail.
+- OTP request accepts `phone`, `purpose`, and a stable client `deviceId`; normalize Indian local numbers to E.164 and return HTTP 202 with an opaque `challengeId` and account-neutral message. Verify accepts `challengeId`, `phone`, `purpose`, six-digit `code`, and `deviceId`; invalid, expired, replayed, locked, and unknown challenges share one generic 401 response. Successful verification resolves/creates the identity according to purpose and returns a 10-minute JWT, opaque refresh token, and next action. `POST /api/v1/auth/tokens/refresh` accepts the current refresh token and rotates it; `POST /api/v1/auth/tokens/revoke` revokes its complete session family and returns 204. Replayed refresh tokens revoke that family. Never return OTP material or internal provider detail.
+- JWTs use HS256 with required `iss`, `aud`, `sub`, `iat`, `exp`, and `jti` claims only. The issuer and audience are validated by the resource server; role and tenant claims are deliberately omitted and will be resolved from current database membership/permissions.
 - `ShopSummary(id, slug, name, distance, fulfillmentOptions, categorySummary)`; `Storefront(store, address/publicLocation, hours, cataloguePage)`.
 - `CartView(shop, items[{variantId, quantity, priceSnapshot, availability}], totals)`; server recalculates all prices/stock at checkout.
 - `CheckoutRequest(addressId, fulfillmentMode, paymentMethod, idempotencyKey, customerNote)`; response `OrderReceipt(orderId, displayNumber, status, paymentInstruction, createdAt)`. Seller UPI details are returned only for the selected shop and are informational; no payment secret is collected.
@@ -30,6 +31,10 @@ OpenAPI is generated from controller contracts and security annotations, reviewe
 ## Validation, errors, and ownership
 
 Validate phone normalization, identifiers, lengths, enum values, image metadata, quantities, price ranges, pagination bounds, allowed status transitions, and location radius. Checkout verifies address ownership, shop publication/approval, item ownership, current price, fulfilment support, and stock in one transaction. Seller endpoints derive tenant from session/membership and verify each resource belongs to it. Customer endpoints verify ownership of addresses, carts, orders, reviews, and device tokens. Public endpoints return only approved, published data. Admin endpoints require explicit permission; sensitive changes require reason and audit event.
+
+OTP request limits are stored centrally with HMAC-keyed phone/IP/device subjects: one request per phone per minute, five per phone per 15 minutes, 30 per IP per 15 minutes, and 10 per device per 15 minutes. Verification has corresponding per-phone/IP/device 15-minute limits, in addition to the challenge attempt limit. All applicable bucket increments are transactional; a denied request rolls back partial bucket consumption. Resolve `X-Real-IP` only when the socket peer is in `OTP_TRUSTED_PROXY_ADDRESSES`; reverse proxies must overwrite that header. The API should not be directly reachable around the trusted proxy in production.
+
+Refresh tokens contain a non-secret session identifier and 256-bit random secret; only SHA-256 hashes are stored. Every refresh locks the presented token/session, consumes it, and stores a replacement atomically. Reuse of a consumed token revokes all tokens in that session family. Access JWTs are stateless and may remain usable until their short expiry after logout or session revocation.
 
 Typical status mapping: 400 invalid input; 401 missing/invalid authentication; 403 role/tenant denial; 404 absent or intentionally concealed resource; 409 stale stock/state/idempotency conflict; 422 valid shape but business rule failure; 429 rate limit; 5xx generic traceable failure. Avoid leaking whether another tenant owns an object.
 

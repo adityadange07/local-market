@@ -23,6 +23,20 @@ spring:
       hibernate:
         jdbc:
           time_zone: UTC
+localshop:
+  identity:
+    otp:
+      hmac-secret: ${OTP_HMAC_SECRET}
+      trusted-proxy-addresses: ${OTP_TRUSTED_PROXY_ADDRESSES:}
+      lifetime: ${OTP_LIFETIME:5m}
+      max-attempts: ${OTP_MAX_ATTEMPTS:5}
+  security:
+    jwt:
+      issuer: ${JWT_ISSUER:https://api.localshop.example}
+      audience: ${JWT_AUDIENCE:local-shop-os-api}
+      signing-secret: ${JWT_SIGNING_SECRET}
+      access-token-ttl: ${JWT_ACCESS_TOKEN_TTL:10m}
+      refresh-session-ttl: ${JWT_REFRESH_SESSION_TTL:30d}
 springdoc:
   api-docs:
     enabled: ${OPENAPI_ENABLED:false}

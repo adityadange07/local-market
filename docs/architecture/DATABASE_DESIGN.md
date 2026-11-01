@@ -18,6 +18,8 @@ users ─< user_roles >─ roles ─< role_permissions >─ permissions
   │                                  └─< subscriptions >─ subscription_plans
   │                                       └─< subscription_invoices ─< payment_attempts
   ├─< customer_addresses
+  ├─< otp_challenges (phone/purpose/expiry/attempt-bound authentication challenges)
+  ├─< auth_sessions ─< refresh_tokens (rotating token family)
   ├─< carts ─< cart_items >─ product_variants
   ├─< orders ─< order_items; orders ─< order_status_history
   │      ├─< payment_records
@@ -32,6 +34,10 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 | Table | Ownership / important relationships | Core constraints and indexes |
 |---|---|---|
 | `users` | Global identity, referenced by all actor records | unique normalized phone; status index; timestamps |
+| `otp_challenges` | Global auth challenge bound to phone and purpose | keyed HMAC only; expiry, bounded attempts, delivery/consume state; phone/time, expiry, retention indexes; 30-day terminal retention target |
+| `otp_rate_limits` | HMAC-keyed request counters for phone, IP, and device windows | composite dimension/hash key; atomic upsert; stale bucket cleanup after one day |
+| `auth_sessions` | User/device refresh session family with fixed expiry and revocation state | user/expiry index; device ID stored as keyed hash; family is revoked on replay/logout |
+| `refresh_tokens` | One-time token hashes belonging to an auth session | unique SHA-256 hash; consumed/replacement linkage; session/expiry indexes; no raw token persistence |
 | `roles`, `permissions` | Global RBAC definitions with explicit role scope | unique role code; composite `(id, scope)` key for scoped FKs |
 | `user_roles` | Global-only user grants (`CUSTOMER`, support, platform admin) | unique user/role; scope check/FK requires `GLOBAL`; assignment audit fields |
 | `role_permissions` | Global permission mapping | unique role/permission |
@@ -79,4 +85,4 @@ Use GiST on store address geography; query radius/order by distance with bounded
 
 ## Migrations and unresolved details
 
-Create migrations in dependency order: identity/RBAC; tenancy/shop; taxonomy/catalog; inventory; customer/cart/order; payment; subscription/webhook; notification/review/audit. Do not generate every table in one initial migration. Identity UUID, role scope, and tenant boundary choices are finalized in [IDENTITY_TENANCY_DECISIONS.md](IDENTITY_TENANCY_DECISIONS.md). Cancellation/restock semantics, cart ownership policy, subscription uniqueness/grace rules, invoice/tax columns, retention, and review target rules remain open for their dependent domain migrations. Use expand/contract changes for deployed schema evolution; never use automatic schema creation in production.
+Create migrations in dependency order: identity/RBAC; tenancy/shop; RLS; OTP challenge and rate-limit storage; auth sessions and refresh tokens; taxonomy/catalog; inventory; customer/cart/order; payment; subscription/webhook; notification/review/audit. Do not generate every table in one initial migration. Identity UUID, role scope, and tenant boundary choices are finalized in [IDENTITY_TENANCY_DECISIONS.md](IDENTITY_TENANCY_DECISIONS.md). OTP terminal rows have a 30-day retention target, rate-limit buckets have a one-day cleanup target, and expired auth session/token rows have a 90-day cleanup target; scheduled cleanup remains pending. Cancellation/restock semantics, cart ownership policy, subscription uniqueness/grace rules, invoice/tax columns, and review target rules remain open for their dependent domain migrations. Use expand/contract changes for deployed schema evolution; never use automatic schema creation in production.

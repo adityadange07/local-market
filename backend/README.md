@@ -21,10 +21,12 @@ Each feature owns its application/domain logic and exposes deliberate interfaces
 
 After LSOS-012, Compose provisions `localshop_runtime` plus the `localshop_app` login. The API uses `localshop_app` for runtime queries; Flyway uses the separate `localshop` migration login locally. In production, run migrations in the release pipeline and set `DB_MIGRATIONS_ENABLED=false` for API processes.
 
-Use Java 21 and Maven 3.6.3 or later:
+Use Java 21 and Maven 3.6.3 or later. Set independent `OTP_HMAC_SECRET` and `JWT_SIGNING_SECRET` values to Base64 output from `openssl rand -base64 32`; both are mandatory and must be managed as secrets outside local development:
 
 ```sh
 cd backend
+export OTP_HMAC_SECRET="$(openssl rand -base64 32)"
+export JWT_SIGNING_SECRET="$(openssl rand -base64 32)"
 SPRING_PROFILES_ACTIVE=local mvn spring-boot:run
 ```
 
@@ -43,6 +45,10 @@ mvn -f backend/pom.xml -Dtest=TenantRlsIntegrationTest test
 ```
 
 The suite covers public store visibility, seller cross-tenant access, onboarding ownership, identity role provisioning, platform administration, and transaction-local context cleanup.
+
+OTP request and verification routes are enabled when the deployment registers an `SmsProvider` implementation. The provider has not been selected; the OTP endpoints do not send messages until one is configured. In production, put only trusted reverse proxy addresses in `OTP_TRUSTED_PROXY_ADDRESSES`; the proxy must replace `X-Real-IP` with the connecting client address.
+
+Successful OTP verification returns a 10-minute JWT and a 30-day absolute refresh session. Android clients must keep refresh tokens in Expo SecureStore; never put them in AsyncStorage. The current JSON token response is intended for native clients. Before enabling browser sessions, complete the secure HttpOnly cookie and CSRF contract for the seller web origin. Refresh-token reuse revokes the entire session family; users must sign in again after replay detection or session expiry.
 
 Springdoc 2.10.0 is used with Spring Boot 3.5; its compatibility matrix lists Spring Boot 3.5 with springdoc 2.8.x–2.10.x ([compatibility matrix](https://springdoc.org/v2/)).
 

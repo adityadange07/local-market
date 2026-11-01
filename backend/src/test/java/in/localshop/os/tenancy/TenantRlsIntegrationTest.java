@@ -3,14 +3,28 @@ package in.localshop.os.tenancy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import javax.sql.DataSource;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.KeyUse;
+import com.nimbusds.jose.jwk.OctetSequenceKey;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -20,10 +34,31 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import in.localshop.os.identity.JdbcOtpChallengeRepository;
+import in.localshop.os.identity.IdentityAccountService;
+import in.localshop.os.identity.AuthTokenService;
+import in.localshop.os.identity.InvalidRefreshTokenException;
+import in.localshop.os.identity.OtpChallenge;
+import in.localshop.os.identity.OtpChallengeService;
+import in.localshop.os.identity.OtpChallengeStatus;
+import in.localshop.os.identity.OtpCodeHasher;
+import in.localshop.os.identity.OtpPurpose;
+import in.localshop.os.identity.OtpRateLimitException;
+import in.localshop.os.identity.OtpRateLimitService;
+import in.localshop.os.identity.OtpVerificationResult;
+import in.localshop.os.identity.SmsProvider;
+import in.localshop.os.identity.TokenResponse;
 
 @Testcontainers
 class TenantRlsIntegrationTest {
@@ -93,7 +128,8 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE stores, tenant_members, tenants, user_roles, users");
+        migrationJdbc.execute("TRUNCATE TABLE refresh_tokens, auth_sessions, otp_rate_limits, otp_challenges, "
+                + "stores, tenant_members, tenants, user_roles, users");
 
         insertUser(USER_A, "+15550000001");
         insertUser(USER_B, "+15550000002");
@@ -273,6 +309,239 @@ class TenantRlsIntegrationTest {
         assertThat(owner).isEqualTo("localshop");
     }
 
+    @Test
+    void otpPersistsOnlyPurposeBoundHmacAndAllowsOneSuccessfulUse() {
+        AtomicReference<String> deliveredCode = new AtomicReference<>();
+        OtpChallengeService service = otpService((phone, purpose, code) -> deliveredCode.set(code),
+                Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneId.of("UTC")));
+
+        UUID challengeId = service.request("+15550000006", OtpPurpose.CUSTOMER_LOGIN);
+        OtpChallenge persisted = new JdbcOtpChallengeRepository(runtimeJdbc).findById(challengeId).orElseThrow();
+        OtpCodeHasher hasher = hasher();
+
+        assertThat(persisted.status()).isEqualTo(OtpChallengeStatus.SENT);
+        assertThat(persisted.codeHash()).hasSize(32).isNotEqualTo(deliveredCode.get().getBytes(StandardCharsets.UTF_8));
+        assertThat(hasher.matches(persisted.codeHash(), challengeId, "+15550000006", OtpPurpose.CUSTOMER_LOGIN,
+                deliveredCode.get())).isTrue();
+        assertThat(hasher.matches(persisted.codeHash(), challengeId, "+15550000006", OtpPurpose.SELLER_LOGIN,
+                deliveredCode.get())).isFalse();
+        assertThat(hasher.matches(persisted.codeHash(), UUID.randomUUID(), "+15550000006",
+                OtpPurpose.CUSTOMER_LOGIN, deliveredCode.get())).isFalse();
+
+        assertThat(service.verify(challengeId, "+15550000006", OtpPurpose.CUSTOMER_LOGIN, deliveredCode.get()))
+                .isEqualTo(OtpVerificationResult.VERIFIED);
+        IdentityAccountService accounts = new IdentityAccountService(
+                runtimeJdbc, contextHolder, databaseContext,
+                new DataSourceTransactionManager(runtimeDataSource), Clock.systemUTC());
+        UUID resolvedUserId = accounts.resolveAfterVerifiedOtp("+15550000006", OtpPurpose.CUSTOMER_LOGIN).userId();
+        assertThat(migrationJdbc.queryForObject("SELECT phone_verified_at IS NOT NULL FROM users WHERE id = ?",
+                Boolean.class, resolvedUserId)).isTrue();
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id "
+                        + "WHERE ur.user_id = ? AND r.code = 'CUSTOMER'",
+                Long.class, resolvedUserId)).isEqualTo(1);
+
+        assertThat(service.verify(challengeId, "+15550000006", OtpPurpose.CUSTOMER_LOGIN, deliveredCode.get()))
+                .isEqualTo(OtpVerificationResult.ALREADY_USED);
+    }
+
+    @Test
+    void otpExpiresAndLocksAfterConfiguredInvalidAttempts() {
+        AdjustableClock clock = new AdjustableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        OtpChallengeService service = otpService((phone, purpose, code) -> { }, clock);
+        UUID expiringId = service.request("+15550000001", OtpPurpose.CUSTOMER_LOGIN);
+        clock.advance(Duration.ofMinutes(6));
+        assertThat(service.verify(expiringId, "+15550000001", OtpPurpose.CUSTOMER_LOGIN, "000000"))
+                .isEqualTo(OtpVerificationResult.EXPIRED);
+
+        clock.advance(Duration.ofMinutes(-6));
+        UUID lockoutId = service.request("+15550000001", OtpPurpose.CUSTOMER_LOGIN);
+        assertThat(service.verify(lockoutId, "+15550000001", OtpPurpose.CUSTOMER_LOGIN, "000000"))
+                .isEqualTo(OtpVerificationResult.INVALID);
+        assertThat(service.verify(lockoutId, "+15550000001", OtpPurpose.CUSTOMER_LOGIN, "000000"))
+                .isEqualTo(OtpVerificationResult.LOCKED);
+        assertThat(service.verify(lockoutId, "+15550000001", OtpPurpose.CUSTOMER_LOGIN, "000001"))
+                .isEqualTo(OtpVerificationResult.LOCKED);
+    }
+
+    @Test
+    void otpProviderFailureInvalidatesChallengeWithoutExposingItsCode() {
+        OtpChallengeService service = otpService((phone, purpose, code) -> {
+            throw new IllegalStateException("simulated provider outage");
+        }, Clock.systemUTC());
+
+        UUID challengeId = service.request("+15550000001", OtpPurpose.CUSTOMER_LOGIN);
+
+        assertThat(new JdbcOtpChallengeRepository(runtimeJdbc).findById(challengeId).orElseThrow().status())
+                .isEqualTo(OtpChallengeStatus.DELIVERY_FAILED);
+        assertThat(service.verify(challengeId, "+15550000001", OtpPurpose.CUSTOMER_LOGIN, "123456"))
+                .isEqualTo(OtpVerificationResult.NOT_DELIVERED);
+    }
+
+    @Test
+    void otpRequestRateLimitsPhoneCooldownAndWindowWithoutStoringRawPhoneKeys() {
+        OtpRateLimitService limits = rateLimitService();
+        Instant start = Instant.parse("2026-01-01T00:00:00Z");
+        String phone = "+15550000001";
+        String ip = "192.0.2.10";
+        String device = "device_0123456789";
+
+        limits.checkAndConsume(OtpRateLimitService.Operation.REQUEST, phone, ip, device, start);
+        assertThat(org.junit.jupiter.api.Assertions.assertThrows(OtpRateLimitException.class,
+                () -> limits.checkAndConsume(OtpRateLimitService.Operation.REQUEST,
+                        phone, ip, device, start.plusSeconds(30))).retryAfterSeconds()).isEqualTo(30);
+
+        OtpCodeHasher hasher = hasher();
+        byte[] phoneHash = hasher.hashRateLimitKey("REQUEST_PHONE_WINDOW", phone);
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM otp_rate_limits WHERE dimension = 'REQUEST_PHONE_WINDOW' "
+                        + "AND subject_hash = ?",
+                Long.class, phoneHash)).isEqualTo(1);
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM otp_rate_limits WHERE subject_hash = ?",
+                Long.class, phone.getBytes(StandardCharsets.UTF_8))).isZero();
+
+        for (int minute = 1; minute <= 4; minute++) {
+            limits.checkAndConsume(OtpRateLimitService.Operation.REQUEST,
+                    phone, ip, device, start.plus(Duration.ofMinutes(minute)));
+        }
+        assertThrows(OtpRateLimitException.class, () -> limits.checkAndConsume(
+                OtpRateLimitService.Operation.REQUEST, phone, ip, device, start.plus(Duration.ofMinutes(5))));
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT request_count FROM otp_rate_limits WHERE dimension = 'REQUEST_PHONE_WINDOW' "
+                        + "AND subject_hash = ?",
+                Integer.class, phoneHash)).isEqualTo(5);
+    }
+
+    @Test
+    void otpIpLimitRejectionRollsBackOtherBucketConsumption() {
+        OtpRateLimitService limits = rateLimitService();
+        Instant now = Instant.parse("2026-01-01T00:00:00Z");
+        String ip = "192.0.2.20";
+        for (int index = 1; index <= 30; index++) {
+            limits.checkAndConsume(OtpRateLimitService.Operation.REQUEST,
+                    "+1555" + String.format("%07d", index), ip,
+                    "device_" + String.format("%010d", index), now);
+        }
+
+        String rejectedPhone = "+15550000099";
+        assertThrows(OtpRateLimitException.class, () -> limits.checkAndConsume(
+                OtpRateLimitService.Operation.REQUEST, rejectedPhone, ip, "device_0000000099", now));
+        byte[] rejectedPhoneHash = hasher().hashRateLimitKey("REQUEST_PHONE_COOLDOWN", rejectedPhone);
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM otp_rate_limits WHERE dimension = 'REQUEST_PHONE_COOLDOWN' "
+                        + "AND subject_hash = ?",
+                Long.class, rejectedPhoneHash)).isZero();
+    }
+
+    @Test
+    void accessJwtHasMinimalClaimsAndRefreshReplayRevokesTheWholeSessionFamily() {
+        AuthTokenService tokenService = authTokenService(Clock.systemUTC(), Duration.ofDays(30));
+        TokenResponse issued = tokenService.issue(USER_A, "device_0123456789");
+        Jwt decoded = jwtDecoder().decode(issued.accessToken());
+        UUID sessionId = UUID.fromString(issued.refreshToken().substring(0, issued.refreshToken().indexOf('.')));
+        byte[] refreshHash = sha256(issued.refreshToken());
+
+        assertThat(decoded.getSubject()).isEqualTo(USER_A.toString());
+        assertThat(decoded.getIssuer().toString()).isEqualTo("https://test.local");
+        assertThat(decoded.getAudience()).containsExactly("local-shop-os-api");
+        assertThat(decoded.getClaims().keySet()).containsExactlyInAnyOrder("iss", "aud", "sub", "iat", "exp", "jti");
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM refresh_tokens WHERE token_hash = ?",
+                Long.class, refreshHash)).isEqualTo(1);
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM refresh_tokens WHERE token_hash = ?",
+                Long.class, issued.refreshToken().getBytes(StandardCharsets.UTF_8))).isZero();
+
+        TokenResponse rotated = tokenService.refresh(issued.refreshToken());
+        assertThat(rotated.refreshToken()).isNotEqualTo(issued.refreshToken());
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT count(*) FROM refresh_tokens WHERE session_id = ? AND consumed_at IS NOT NULL "
+                        + "AND replaced_by_token_id IS NOT NULL",
+                Long.class, sessionId)).isEqualTo(1);
+
+        assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(issued.refreshToken()));
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT revoke_reason FROM auth_sessions WHERE id = ?", String.class, sessionId))
+                .isEqualTo("REFRESH_REUSE");
+        assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(rotated.refreshToken()));
+    }
+
+    @Test
+    void logoutRevokesRefreshFamilyAndExpiredRefreshTokensCannotRotate() {
+        AuthTokenService tokenService = authTokenService(Clock.systemUTC(), Duration.ofDays(30));
+        TokenResponse issued = tokenService.issue(USER_A, "device_0123456789");
+        UUID sessionId = UUID.fromString(issued.refreshToken().substring(0, issued.refreshToken().indexOf('.')));
+
+        tokenService.revoke(issued.refreshToken());
+        tokenService.revoke(issued.refreshToken());
+        assertThat(migrationJdbc.queryForObject(
+                "SELECT revoke_reason FROM auth_sessions WHERE id = ?", String.class, sessionId)).isEqualTo("LOGOUT");
+        assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(issued.refreshToken()));
+
+        AdjustableClock clock = new AdjustableClock(Instant.now());
+        AuthTokenService shortSession = authTokenService(clock, Duration.ofSeconds(1));
+        TokenResponse expiring = shortSession.issue(USER_A, "device_0123456789");
+        clock.advance(Duration.ofSeconds(2));
+        assertThrows(InvalidRefreshTokenException.class, () -> shortSession.refresh(expiring.refreshToken()));
+    }
+
+    @Test
+    void deviceRevocationRevokesAllSessionsOnlyForThatUserAndDevice() {
+        AuthTokenService tokenService = authTokenService(Clock.systemUTC(), Duration.ofDays(30));
+        TokenResponse firstOnDevice = tokenService.issue(USER_A, "device_0123456789");
+        TokenResponse secondOnDevice = tokenService.issue(USER_A, "device_0123456789");
+        TokenResponse otherDevice = tokenService.issue(USER_A, "device_9876543210");
+
+        tokenService.revokeDeviceSessions(USER_A, "device_0123456789");
+
+        assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(firstOnDevice.refreshToken()));
+        assertThrows(InvalidRefreshTokenException.class, () -> tokenService.refresh(secondOnDevice.refreshToken()));
+        assertThat(tokenService.refresh(otherDevice.refreshToken()).refreshToken())
+                .isNotEqualTo(otherDevice.refreshToken());
+    }
+
+    private OtpRateLimitService rateLimitService() {
+        return new OtpRateLimitService(runtimeJdbc, hasher(), new DataSourceTransactionManager(runtimeDataSource));
+    }
+
+    private AuthTokenService authTokenService(Clock clock, Duration refreshTtl) {
+        byte[] rawKey = "test-jwt-signing-secret-with-at-least-32-bytes".getBytes(StandardCharsets.UTF_8);
+        SecretKey key = new SecretKeySpec(rawKey, "HmacSHA256");
+        OctetSequenceKey jwk = new OctetSequenceKey.Builder(key)
+                .keyUse(KeyUse.SIGNATURE)
+                .algorithm(JWSAlgorithm.HS256)
+                .build();
+        NimbusJwtEncoder encoder = new NimbusJwtEncoder(new ImmutableJWKSet<>(new JWKSet(jwk)));
+        return new AuthTokenService(runtimeJdbc, encoder, new SecureRandom(), clock,
+                contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                Duration.ofMinutes(10), refreshTtl, "https://test.local", "local-shop-os-api");
+    }
+
+    private static JwtDecoder jwtDecoder() {
+        byte[] rawKey = "test-jwt-signing-secret-with-at-least-32-bytes".getBytes(StandardCharsets.UTF_8);
+        return NimbusJwtDecoder.withSecretKey(new SecretKeySpec(rawKey, "HmacSHA256"))
+                .macAlgorithm(MacAlgorithm.HS256)
+                .build();
+    }
+
+    private static byte[] sha256(String value) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private OtpChallengeService otpService(SmsProvider provider, Clock clock) {
+        return new OtpChallengeService(new JdbcOtpChallengeRepository(runtimeJdbc), provider, hasher(),
+                new SecureRandom(), clock, Duration.ofMinutes(5), 2);
+    }
+
+    private static OtpCodeHasher hasher() {
+        return new OtpCodeHasher("test-only-secret-with-at-least-32-bytes".getBytes(StandardCharsets.UTF_8));
+    }
+
     private <T> T inContext(TenantExecutionContext context, Supplier<T> operation) {
         try (TenantContextHolder.Scope ignored = contextHolder.install(context)) {
             return transactionTemplate.execute(status -> {
@@ -339,5 +608,32 @@ class TenantRlsIntegrationTest {
         config.setMinimumIdle(poolSize);
         config.setPoolName("tenant-rls-test-" + username);
         return new HikariDataSource(config);
+    }
+
+    private static final class AdjustableClock extends Clock {
+        private Instant instant;
+
+        private AdjustableClock(Instant instant) {
+            this.instant = instant;
+        }
+
+        private void advance(Duration duration) {
+            instant = instant.plus(duration);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneId.of("UTC");
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
     }
 }

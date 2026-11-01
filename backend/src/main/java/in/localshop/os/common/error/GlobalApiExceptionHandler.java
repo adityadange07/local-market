@@ -5,6 +5,9 @@ import java.util.TreeMap;
 import java.util.UUID;
 
 import in.localshop.os.common.web.TraceIdFilter;
+import in.localshop.os.identity.IdentityAuthenticationRejectedException;
+import in.localshop.os.identity.InvalidOtpPhoneException;
+import in.localshop.os.identity.InvalidRefreshTokenException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
@@ -44,6 +47,27 @@ public class GlobalApiExceptionHandler {
                 exception.getMessage(),
                 exception.fieldErrors(),
                 request);
+    }
+
+    @ExceptionHandler(InvalidOtpPhoneException.class)
+    public ResponseEntity<ApiError> handleInvalidOtpPhone(
+            InvalidOtpPhoneException exception, HttpServletRequest request) {
+        return response(HttpStatus.BAD_REQUEST, ApiErrorCode.VALIDATION_FAILED,
+                "Request validation failed.", Map.of("phone", "Enter a valid phone number."), request);
+    }
+
+    @ExceptionHandler(IdentityAuthenticationRejectedException.class)
+    public ResponseEntity<ApiError> handleIdentityAuthenticationRejected(
+            IdentityAuthenticationRejectedException exception, HttpServletRequest request) {
+        return response(HttpStatus.UNAUTHORIZED, ApiErrorCode.UNAUTHORIZED,
+                "The verification code is invalid or no longer valid.", Map.of(), request);
+    }
+
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ResponseEntity<ApiError> handleInvalidRefreshToken(
+            InvalidRefreshTokenException exception, HttpServletRequest request) {
+        return response(HttpStatus.UNAUTHORIZED, ApiErrorCode.UNAUTHORIZED,
+                "Refresh token is invalid or expired.", Map.of(), request);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

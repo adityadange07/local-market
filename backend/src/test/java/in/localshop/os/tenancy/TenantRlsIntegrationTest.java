@@ -67,6 +67,14 @@ import in.localshop.os.identity.OtpRateLimitException;
 import in.localshop.os.identity.OtpRateLimitService;
 import in.localshop.os.identity.OtpVerificationResult;
 import in.localshop.os.identity.PermissionAuthorization;
+import in.localshop.os.shops.ShopApplicationRequest;
+import in.localshop.os.shops.ShopApplicationService;
+import in.localshop.os.shops.StoreAddressRequest;
+import in.localshop.os.shops.StoreFulfillmentRequest;
+import in.localshop.os.shops.StoreHourRequest;
+import in.localshop.os.shops.StoreHoursRequest;
+import in.localshop.os.shops.StoreProfileRequest;
+import in.localshop.os.shops.StoreProfileService;
 import in.localshop.os.identity.SmsProvider;
 import in.localshop.os.identity.TokenResponse;
 
@@ -138,9 +146,9 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE audit_logs, admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, "
-                + "refresh_tokens, auth_sessions, otp_rate_limits, otp_challenges, stores, tenant_members, "
-                + "tenants, user_roles, users");
+        migrationJdbc.execute("TRUNCATE TABLE store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
+                + "admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, refresh_tokens, auth_sessions, "
+                + "otp_rate_limits, otp_challenges, stores, tenant_members, tenants, user_roles, users");
 
         insertUser(USER_A, "+15550000001");
         insertUser(USER_B, "+15550000002");
@@ -649,6 +657,145 @@ class TenantRlsIntegrationTest {
         } finally {
             SecurityContextHolder.clearContext();
         }
+    }
+
+    @Test
+    void shopApplicationCreatesPrivateOwnerTenantAndAdminApprovalDoesNotPublishStore() {
+        Clock clock = Clock.systemUTC();
+        AuthTokenService tokenService = authTokenService(clock, Duration.ofDays(30));
+        AuditEventService auditEvents = new AuditEventService(
+                runtimeJdbc, contextHolder, databaseContext, new AuditRedactor(new ObjectMapper()),
+                new DataSourceTransactionManager(runtimeDataSource), clock);
+        ShopApplicationService applications = new ShopApplicationService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                auditEvents, clock);
+        setAuthenticatedUser(USER_A, List.of());
+        try {
+            var submitted = applications.submit(new ShopApplicationRequest(
+                    "Fresh Shop Account", "Fresh Shop", "fresh-shop"));
+            assertThat(submitted.status()).isEqualTo("PENDING_APPROVAL");
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> applications.submit(new ShopApplicationRequest(
+                            "Duplicate Account", "Duplicate Shop", "fresh-shop")));
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT count(*) FROM tenant_members WHERE tenant_id = ? AND user_id = ? "
+                            + "AND status = 'ACTIVE' AND role_id = (SELECT id FROM roles WHERE code = 'TENANT_OWNER')",
+                    Long.class, submitted.tenantId(), USER_A)).isEqualTo(1L);
+            assertThat(applications.ownApplications(20).items()).extracting("tenantId")
+                    .contains(submitted.tenantId());
+            assertThat(inContext(context(null, null, TenantActorScope.PUBLIC), () -> runtimeJdbc.queryForObject(
+                    "SELECT count(*) FROM stores WHERE tenant_id = ?", Long.class, submitted.tenantId())))
+                    .isZero();
+
+            setAuthenticatedUser(PLATFORM_ADMIN, List.of("sms", "totp"));
+            var approved = applications.approve(submitted.tenantId());
+            assertThat(approved.status()).isEqualTo("APPROVED");
+            assertThat(approved.reviewedAt()).isNotNull();
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT status FROM stores WHERE tenant_id = ?", String.class, submitted.tenantId()))
+                    .isEqualTo("DRAFT");
+            assertThat(inContext(context(null, null, TenantActorScope.PUBLIC), () -> runtimeJdbc.queryForObject(
+                    "SELECT count(*) FROM stores WHERE tenant_id = ?", Long.class, submitted.tenantId())))
+                    .isZero();
+            assertThat(migrationJdbc.queryForObject(
+                    "SELECT count(*) FROM audit_logs WHERE object_id = ? "
+                            + "AND action_code IN ('shop.application.submitted', 'shop.application.approved')",
+                    Long.class, submitted.tenantId().toString())).isEqualTo(2L);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void rejectedApplicationRequiresReasonAndCannotBeReviewedTwice() {
+        Clock clock = Clock.systemUTC();
+        AuthTokenService tokenService = authTokenService(clock, Duration.ofDays(30));
+        AuditEventService auditEvents = new AuditEventService(
+                runtimeJdbc, contextHolder, databaseContext, new AuditRedactor(new ObjectMapper()),
+                new DataSourceTransactionManager(runtimeDataSource), clock);
+        ShopApplicationService applications = new ShopApplicationService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                auditEvents, clock);
+        setAuthenticatedUser(USER_B, List.of());
+        try {
+            var submitted = applications.submit(new ShopApplicationRequest(
+                    "Second Account", "Second Shop", "second-shop"));
+            setAuthenticatedUser(PLATFORM_ADMIN, List.of("sms", "totp"));
+            var rejected = applications.reject(submitted.tenantId(), "Please provide a valid business address.");
+            assertThat(rejected.status()).isEqualTo("REJECTED");
+            assertThat(rejected.rejectionReason()).isEqualTo("Please provide a valid business address.");
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> applications.approve(submitted.tenantId()));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    @Test
+    void sellerConfiguresStoreAndOnlyPublishesAfterAddressHoursAndFulfillmentAreComplete() {
+        Clock clock = Clock.systemUTC();
+        AuditEventService auditEvents = new AuditEventService(
+                runtimeJdbc, contextHolder, databaseContext, new AuditRedactor(new ObjectMapper()),
+                new DataSourceTransactionManager(runtimeDataSource), clock);
+        ShopApplicationService applications = new ShopApplicationService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                auditEvents, clock);
+        StoreProfileService stores = new StoreProfileService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                new PermissionAuthorization(runtimeJdbc, contextHolder, databaseContext,
+                        new DataSourceTransactionManager(runtimeDataSource)), auditEvents, clock);
+        setAuthenticatedUser(USER_A, List.of());
+        try {
+            var application = applications.submit(new ShopApplicationRequest(
+                    "Nagpur Retail", "Nagpur Daily", "nagpur-daily"));
+            setAuthenticatedUser(PLATFORM_ADMIN, List.of("sms", "totp"));
+            applications.approve(application.tenantId());
+
+            setAuthenticatedUser(USER_A, List.of());
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> stores.publish(application.tenantId()));
+            stores.updateProfile(application.tenantId(),
+                    new StoreProfileRequest("Nagpur Daily Store", "Neighborhood essentials", "nagpur-daily"));
+            stores.updateAddress(application.tenantId(), new StoreAddressRequest(
+                    "12 Central Avenue", null, "Near market", "Sitabuldi", "Nagpur", "Maharashtra",
+                    "440012", 21.1458, 79.0882));
+            stores.updateFulfillment(application.tenantId(),
+                    new StoreFulfillmentRequest(true, true, 5000, 0, "Asia/Kolkata"));
+            List<StoreHourRequest> weeklyHours = java.util.stream.IntStream.rangeClosed(1, 7)
+                    .mapToObj(day -> new StoreHourRequest(day, java.time.LocalTime.of(9, 0),
+                            java.time.LocalTime.of(18, 0), false)).toList();
+            stores.updateHours(application.tenantId(), new StoreHoursRequest(weeklyHours));
+
+            var published = stores.publish(application.tenantId());
+            assertThat(published.status()).isEqualTo("PUBLISHED");
+            var storefront = stores.publicStorefront("nagpur-daily");
+            assertThat(storefront.displayName()).isEqualTo("Nagpur Daily Store");
+            assertThat(storefront.address().postalCode()).isEqualTo("440012");
+            assertThat(storefront.address().latitude()).isCloseTo(21.1458, org.assertj.core.data.Offset.offset(0.0001));
+            assertThat(storefront.fulfillment().deliveryRadiusMeters()).isEqualTo(5000);
+            assertThat(storefront.hours()).hasSize(7);
+
+            setAuthenticatedUser(USER_A, List.of());
+            assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                    () -> stores.updateProfile(TENANT_B,
+                            new StoreProfileRequest("Unauthorized Shop", null, "unauthorized-shop")));
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    private static void setAuthenticatedUser(UUID userId, List<String> authenticationMethods) {
+        var builder = Jwt.withTokenValue("test-" + userId)
+                .header("alg", "none")
+                .subject(userId.toString())
+                .issuedAt(Instant.now())
+                .expiresAt(Instant.now().plusSeconds(600));
+        if (!authenticationMethods.isEmpty()) {
+            builder.claim("amr", authenticationMethods);
+        }
+        JwtAuthenticationToken authentication = new JwtAuthenticationToken(builder.build());
+        authentication.setAuthenticated(true);
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 
     private OtpRateLimitService rateLimitService() {

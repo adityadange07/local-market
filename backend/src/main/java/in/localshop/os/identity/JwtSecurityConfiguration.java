@@ -98,7 +98,10 @@ public class JwtSecurityConfiguration {
                                 "/actuator/health", "/actuator/health/**", "/v3/api-docs/**",
                                 "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/api/v1/auth/tokens/revoke-device",
-                                "/api/v1/auth/admin/mfa/**").authenticated()
+                                "/api/v1/auth/admin/mfa/**", "/api/v1/seller/applications/**",
+                                "/api/v1/seller/tenants/*/store", "/api/v1/seller/tenants/*/store/**",
+                                "/api/v1/admin/shop-applications/**").authenticated()
+                        .requestMatchers("/api/v1/marketplace/shops/**").permitAll()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(Customizer.withDefaults()))
                 .exceptionHandling(exceptions -> exceptions

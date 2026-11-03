@@ -168,6 +168,8 @@ Status: **Implemented**. V9 adds forced-RLS, append-only audit storage; `AuditEv
 - **Tests:** valid transitions, unauthorized review, duplicate application, unpublished before approval. **Acceptance criteria:** Approved shop may proceed; rejected shop remains non-public with reason. **DoD:** Shared definition; API docs/tests updated.
 - **Priority:** P0. **Estimate:** 20 h.
 
+Status: **Implemented**. Seller submission atomically creates the tenant, draft store, and owner membership; it transitions to pending review. Admin review is MFA/permission gated, records rejection reasons, audits the decision, and rejects stale/repeated transitions. Tests cover private pending state, approval without publication, and rejection behavior.
+
 ## LSOS-021 — Store profile, address, hours, and fulfillment APIs
 
 - **Epic:** Shop Operations. **Description:** Manage public shop profile and seller-defined pickup/delivery availability. **Business value:** Gives customers accurate local shop information and fulfilment choices.
@@ -175,6 +177,8 @@ Status: **Implemented**. V9 adds forced-RLS, append-only audit storage; `AuditEv
 - **Implementation steps:** Add migrations/entities; ownership-checked services; validate hours and coordinates; expose DTOs. **Dependencies:** LSOS-020.
 - **Tests:** slug uniqueness, geo constraints, tenant denial, public visibility state. **Acceptance criteria:** Seller config is scoped and public only after approval/publish. **DoD:** Shared definition; migration and OpenAPI reviewed.
 - **Priority:** P0. **Estimate:** 16 h.
+
+Status: **Implemented**. V11 adds tenant-owned address, schedule, and fulfillment tables with PostGIS indexing and RLS. Seller APIs resolve active tenant permissions before entering tenant context; public storefront reads require approved and published state. Publishing validates the complete weekly schedule and fulfillment configuration.
 
 ## LSOS-022 — Category and product schema/API
 

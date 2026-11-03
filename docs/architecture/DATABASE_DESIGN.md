@@ -50,8 +50,9 @@ webhook_events are linked to gateway/payment context and deduplicated by provide
 | `tenants` | Shop tenant; onboarding/approval lifecycle, review actor and reason | status/creation index; review actor FK; actor/time pairing check |
 | `tenant_members` | Tenant + user membership; one tenant-scoped role per membership | unique tenant/user; scope check/FK requires `TENANT`; joined-at and status checks; user/status index |
 | `stores` | `tenant_id`, one MVP store per tenant | unique tenant; unique normalized public slug; `(tenant_id,id)` composite key; status/update index |
-| `store_addresses` | `tenant_id`, store FK | store/tenant composite ownership; PostGIS geography index; address purpose |
-| `store_hours` | `tenant_id`, store FK | unique store/day/time-window as domain allows; tenant/store index |
+| `store_addresses` | `tenant_id`, store FK | one address per store; store/tenant composite ownership; PostGIS geography point with GiST index; six-digit Indian postal code |
+| `store_hours` | `tenant_id`, store FK | unique store/ISO-weekday; same-day open/close check; seven-day schedule validated by service |
+| `store_fulfillment_settings` | `tenant_id`, store FK | at least one of pickup/delivery; bounded delivery radius; nonnegative minimum order; IANA timezone |
 | `categories` | Platform-managed taxonomy; optional parent | unique slug; parent FK; active/sort index |
 | `products` | `tenant_id`, store/category FKs | unique tenant/SKU when SKU supplied; tenant/status/category indexes; checks for price/state |
 | `product_images` | `tenant_id`, product FK | tenant/product composite ownership; ordered display index; storage key unique as appropriate |

@@ -75,6 +75,11 @@ import in.localshop.os.shops.StoreHourRequest;
 import in.localshop.os.shops.StoreHoursRequest;
 import in.localshop.os.shops.StoreProfileRequest;
 import in.localshop.os.shops.StoreProfileService;
+import in.localshop.os.catalog.ProductCatalogService;
+import in.localshop.os.catalog.ProductRequest;
+import in.localshop.os.inventory.StockAdjustmentRequest;
+import in.localshop.os.inventory.VariantInventoryService;
+import in.localshop.os.inventory.VariantRequest;
 import in.localshop.os.identity.SmsProvider;
 import in.localshop.os.identity.TokenResponse;
 
@@ -146,9 +151,9 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
+        migrationJdbc.execute("TRUNCATE TABLE stock_movements, inventory, product_variants, store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
                 + "admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, refresh_tokens, auth_sessions, "
-                + "otp_rate_limits, otp_challenges, stores, tenant_members, tenants, user_roles, users");
+                + "otp_rate_limits, otp_challenges, products, stores, tenant_members, tenants, user_roles, users");
 
         insertUser(USER_A, "+15550000001");
         insertUser(USER_B, "+15550000002");
@@ -732,7 +737,7 @@ class TenantRlsIntegrationTest {
     }
 
     @Test
-    void sellerConfiguresStoreAndOnlyPublishesAfterAddressHoursAndFulfillmentAreComplete() {
+    void sellerConfiguresStoreAndOnlyPublishesAfterAddressHoursAndFulfillmentAreComplete() throws Exception {
         Clock clock = Clock.systemUTC();
         AuditEventService auditEvents = new AuditEventService(
                 runtimeJdbc, contextHolder, databaseContext, new AuditRedactor(new ObjectMapper()),
@@ -740,10 +745,17 @@ class TenantRlsIntegrationTest {
         ShopApplicationService applications = new ShopApplicationService(
                 runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
                 auditEvents, clock);
+        PermissionAuthorization permissionAuthorization = new PermissionAuthorization(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource));
         StoreProfileService stores = new StoreProfileService(
                 runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
-                new PermissionAuthorization(runtimeJdbc, contextHolder, databaseContext,
-                        new DataSourceTransactionManager(runtimeDataSource)), auditEvents, clock);
+                permissionAuthorization, auditEvents, clock);
+        ProductCatalogService catalog = new ProductCatalogService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                permissionAuthorization, auditEvents, clock);
+        VariantInventoryService inventory = new VariantInventoryService(
+                    runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                    permissionAuthorization, auditEvents, clock);
         setAuthenticatedUser(USER_A, List.of());
         try {
             var application = applications.submit(new ShopApplicationRequest(
@@ -774,6 +786,64 @@ class TenantRlsIntegrationTest {
             assertThat(storefront.address().latitude()).isCloseTo(21.1458, org.assertj.core.data.Offset.offset(0.0001));
             assertThat(storefront.fulfillment().deliveryRadiusMeters()).isEqualTo(5000);
             assertThat(storefront.hours()).hasSize(7);
+
+            UUID groceryCategory = migrationJdbc.queryForObject(
+                    "SELECT id FROM categories WHERE slug = 'groceries'", UUID.class);
+            var product = catalog.create(application.tenantId(), new ProductRequest(
+                    groceryCategory, "RICE-5KG", "rice-5kg", "Rice 5 kg", "Premium local rice", 12000, 15000L));
+            assertThat(product.status()).isEqualTo("DRAFT");
+            assertThat(catalog.publicProducts("nagpur-daily", null, 20).items()).isEmpty();
+            product = catalog.publish(application.tenantId(), product.id());
+            assertThat(product.status()).isEqualTo("PUBLISHED");
+            UUID productId = product.id();
+            var variant = inventory.createVariant(application.tenantId(), productId,
+                    new VariantRequest("DEFAULT", "5 kg bag", null, null));
+            assertThat(inventory.inventory(application.tenantId(), variant.id()).quantityOnHand()).isZero();
+            var adjusted = inventory.adjust(application.tenantId(), variant.id(),
+                    new StockAdjustmentRequest(12, "Initial shelf count"));
+            assertThat(adjusted.quantityOnHand()).isEqualTo(12);
+            assertThat(inventory.movements(application.tenantId(), variant.id(), 20))
+                    .singleElement().satisfies(movement -> {
+                        assertThat(movement.quantityBefore()).isZero();
+                        assertThat(movement.quantityAfter()).isEqualTo(12);
+                        assertThat(movement.quantityDelta()).isEqualTo(12);
+                        assertThat(movement.reason()).isEqualTo("Initial shelf count");
+                    });
+            var executor = java.util.concurrent.Executors.newFixedThreadPool(4);
+            try {
+                var adjustments = java.util.stream.IntStream.range(0, 8)
+                        .mapToObj(index -> executor.submit(() -> {
+                            setAuthenticatedUser(USER_A, List.of());
+                            try {
+                                inventory.adjust(application.tenantId(), variant.id(),
+                                        new StockAdjustmentRequest(1, "Concurrent count " + index));
+                            } finally {
+                                SecurityContextHolder.clearContext();
+                            }
+                        })).toList();
+                for (var adjustment : adjustments) adjustment.get();
+            } finally {
+                executor.shutdownNow();
+            }
+            assertThat(inventory.inventory(application.tenantId(), variant.id()).quantityOnHand()).isEqualTo(20);
+            assertThat(inventory.movements(application.tenantId(), variant.id(), 20)).hasSize(9);
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> inventory.adjust(application.tenantId(), variant.id(),
+                            new StockAdjustmentRequest(-21, "Invalid stock take")));
+            assertThat(inventory.inventory(application.tenantId(), variant.id()).quantityOnHand()).isEqualTo(20);
+            assertThat(inventory.movements(application.tenantId(), variant.id(), 20)).hasSize(9);
+            assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                    () -> inventory.inventory(TENANT_B, variant.id()));
+            assertThat(catalog.publicProducts("nagpur-daily", "groceries", 20).items())
+                    .extracting("slug").containsExactly("rice-5kg");
+            var duplicateSku = new ProductRequest(
+                    groceryCategory, "RICE-5KG", "basmati-5kg", "Basmati rice", null, 15000, null);
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> catalog.create(application.tenantId(), duplicateSku));
+            assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                    () -> catalog.update(TENANT_B, productId, duplicateSku));
+            catalog.archive(application.tenantId(), productId);
+            assertThat(catalog.publicProducts("nagpur-daily", null, 20).items()).isEmpty();
 
             setAuthenticatedUser(USER_A, List.of());
             assertThrows(org.springframework.security.access.AccessDeniedException.class,

@@ -51,3 +51,28 @@ Bound page size (default 20, maximum 100 unless a route has a smaller cap); defi
 ## Webhooks
 
 `POST /api/v1/subscriptions/webhooks/razorpay` reads raw bytes, verifies signature before accepting, persists provider event ID/payload metadata, deduplicates, responds promptly, and processes asynchronously/retryably. Store only necessary payload data with a retention policy. Browser redirects are not authoritative payment confirmation.
+# Catalog API implementation (V12)
+
+| Method | Path | Request / response | Access |
+|---|---|---|---|
+| GET | `/api/v1/marketplace/categories` | `CategoryView[]` of active categories | Public |
+| GET | `/api/v1/marketplace/shops/{slug}/products?category=&limit=` | `ProductList` containing published product summaries | Public; only approved, published shops |
+| GET | `/api/v1/seller/tenants/{tenantId}/products` | `ProductList` | Authenticated tenant member with `tenant.catalog.read` |
+| POST | `/api/v1/seller/tenants/{tenantId}/products` | `ProductRequest` → `ProductView` | Authenticated tenant member with `tenant.catalog.manage` |
+| PUT | `/api/v1/seller/tenants/{tenantId}/products/{productId}` | `ProductRequest` → `ProductView` | Same tenant and permission; archived products are immutable |
+| POST | `/api/v1/seller/tenants/{tenantId}/products/{productId}/publish` | `ProductView` | Same tenant and permission; shop must be approved and published |
+| POST | `/api/v1/seller/tenants/{tenantId}/products/{productId}/archive` | `ProductView` | Same tenant and permission |
+
+Requests validate slug/SKU formats, positive INR minor-unit price, compare-at price not below the selling price, and active category membership. Seller listing is tenant-scoped and paginated by a bounded `limit`; public listing excludes drafts and archived products.
+
+## Variants and inventory (V13)
+
+| Method | Path | Request / response | Access |
+|---|---|---|---|
+| GET | `/api/v1/seller/tenants/{tenantId}/products/{productId}/variants` | `VariantView[]` | `tenant.catalog.read` |
+| POST | `/api/v1/seller/tenants/{tenantId}/products/{productId}/variants` | `VariantRequest` → `VariantView`; initializes zero stock | `tenant.catalog.manage` |
+| GET | `/api/v1/seller/tenants/{tenantId}/variants/{variantId}/inventory` | `InventoryView` | `tenant.inventory.read` |
+| POST | `/api/v1/seller/tenants/{tenantId}/variants/{variantId}/inventory/adjustments` | `StockAdjustmentRequest` → `InventoryView` | `tenant.inventory.manage` |
+| GET | `/api/v1/seller/tenants/{tenantId}/variants/{variantId}/inventory/movements?limit=` | `StockMovementView[]` | `tenant.inventory.read` |
+
+Adjustment delta must be nonzero and reason nonblank (up to 240 characters). The service serializes adjustments with a row lock, rejects underflow/overflow, and commits quantity and attributable movement atomically. `409` reports an invalid stock transition; cross-tenant resources are not discoverable. Reservation and fulfillment movements are specified with checkout/order implementation.

@@ -257,3 +257,10 @@ Status: **Implemented**. V11 adds tenant-owned address, schedule, and fulfillmen
 Primary chain: `001 → 002 → 003/005 → 006 → 007/008 → 009 → 010 → 011 → 012 → 013`; then `014 → 015 → 016 → 017 → 020 → 021 → 022 → 023 → 025`; checkout chain `015 + 022 → 026 → 027 → 028`; billing chain `017 + 011 → 019/029 → 030`.
 
 After DTOs are agreed, web/mobile shells and design components can progress alongside backend tickets; these first 30 tickets focus primarily on platform and vertical-slice APIs. `018` may proceed after session/RBAC foundations. `024` can proceed alongside inventory once product ownership is stable. Keep shared migrations, tenant/auth, checkout, and subscription state transitions serialized. Subsequent tickets cover notification delivery, dashboards, full Android journeys, E2E, security/performance, deployment, and pilot operations as laid out in `DEVELOPMENT_PHASES.md`.
+# LSOS-022 status
+
+**Implemented:** V12 category/product schema and seed data, tenant-isolated seller product CRUD and lifecycle APIs, active category and public storefront product reads, DTO validation, security route configuration, and PostGIS-backed tenant RLS integration coverage. Focused backend suite passed on 2026-11-03.
+
+# LSOS-023 status
+
+**Implemented:** V13 adds tenant-scoped variants, per-variant nonnegative inventory, and immutable attributable stock movements. Seller APIs create/list variants, read balances/history, and make reasoned stock adjustments. Adjustments use `SELECT ... FOR UPDATE` and update balance plus movement atomically; underflow and integer overflow are rejected. Checkout reservations/decrements remain in LSOS-027. PostGIS integration coverage verifies initial zero stock, adjustment history, underflow rollback, and cross-tenant denial.

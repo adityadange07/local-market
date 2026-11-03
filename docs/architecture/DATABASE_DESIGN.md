@@ -100,3 +100,7 @@ The global `categories` taxonomy is seeded with stable UUIDs and active slugs. `
 ## V13: Variants and stock
 
 `product_variants` belongs to one product and tenant; variant codes are unique per product and optional SKUs per tenant. Variant price is an optional INR minor-unit override. Each variant has one `inventory` row with a nonnegative on-hand quantity. Each adjustment writes a `stock_movements` record with actor, reason, delta, before/after quantities, and timestamp. The inventory row is locked during adjustment; the balance update and movement insert share a transaction. Movement rows are immutable by database trigger. RLS limits variant, inventory, and movement access to the active tenant seller context. Reservations and decrement on order acceptance are deferred to checkout design in LSOS-027.
+
+## V14: Product image metadata
+
+`product_images` stores product/tenant ownership, generated storage key, signature-verified content type, bounded byte size, SHA-256 digest, scan state, order, and creator. Object data is kept in the configured storage adapter. The default scanner leaves files `PENDING_SCAN`; only `CLEAN` files of published products on published stores of approved tenants are public under RLS. Rejected/unscanned files remain unavailable publicly.

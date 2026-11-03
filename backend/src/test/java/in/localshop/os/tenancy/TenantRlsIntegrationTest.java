@@ -80,6 +80,9 @@ import in.localshop.os.catalog.ProductRequest;
 import in.localshop.os.inventory.StockAdjustmentRequest;
 import in.localshop.os.inventory.VariantInventoryService;
 import in.localshop.os.inventory.VariantRequest;
+import in.localshop.os.files.FileStorage;
+import in.localshop.os.files.MalwareScanner;
+import in.localshop.os.files.ProductImageService;
 import in.localshop.os.identity.SmsProvider;
 import in.localshop.os.identity.TokenResponse;
 
@@ -151,7 +154,7 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE stock_movements, inventory, product_variants, store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
+        migrationJdbc.execute("TRUNCATE TABLE product_images, stock_movements, inventory, product_variants, store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
                 + "admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, refresh_tokens, auth_sessions, "
                 + "otp_rate_limits, otp_challenges, products, stores, tenant_members, tenants, user_roles, users");
 
@@ -756,6 +759,18 @@ class TenantRlsIntegrationTest {
         VariantInventoryService inventory = new VariantInventoryService(
                     runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
                     permissionAuthorization, auditEvents, clock);
+        java.util.Map<String, byte[]> imageObjects = new java.util.concurrent.ConcurrentHashMap<>();
+        FileStorage imageStorage = new FileStorage() {
+            @Override public void put(String key, byte[] bytes) { imageObjects.put(key, bytes.clone()); }
+            @Override public byte[] read(String key) { return imageObjects.get(key).clone(); }
+            @Override public void delete(String key) { imageObjects.remove(key); }
+        };
+        java.util.concurrent.atomic.AtomicInteger imageScanCount = new java.util.concurrent.atomic.AtomicInteger();
+        MalwareScanner imageScanner = (content, type) -> imageScanCount.incrementAndGet() == 1
+                ? MalwareScanner.ScanStatus.PENDING_SCAN : MalwareScanner.ScanStatus.CLEAN;
+        ProductImageService productImages = new ProductImageService(runtimeJdbc, contextHolder, databaseContext,
+                new DataSourceTransactionManager(runtimeDataSource), permissionAuthorization, auditEvents,
+                imageStorage, imageScanner, clock);
         setAuthenticatedUser(USER_A, List.of());
         try {
             var application = applications.submit(new ShopApplicationRequest(
@@ -836,6 +851,17 @@ class TenantRlsIntegrationTest {
                     () -> inventory.inventory(TENANT_B, variant.id()));
             assertThat(catalog.publicProducts("nagpur-daily", "groceries", 20).items())
                     .extracting("slug").containsExactly("rice-5kg");
+            byte[] pngSignature = new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+            var pendingImage = productImages.upload(application.tenantId(), productId, pngSignature);
+            assertThat(pendingImage.scanStatus()).isEqualTo("PENDING_SCAN");
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> productImages.publicImage("nagpur-daily", "rice-5kg", pendingImage.id()));
+            var cleanImage = productImages.upload(application.tenantId(), productId, pngSignature);
+            assertThat(cleanImage.scanStatus()).isEqualTo("CLEAN");
+            assertThat(productImages.publicImage("nagpur-daily", "rice-5kg", cleanImage.id()).content())
+                    .containsExactly(pngSignature);
+            assertThrows(org.springframework.security.access.AccessDeniedException.class,
+                    () -> productImages.sellerImages(TENANT_B, productId));
             var duplicateSku = new ProductRequest(
                     groceryCategory, "RICE-5KG", "basmati-5kg", "Basmati rice", null, 15000, null);
             assertThrows(org.springframework.web.server.ResponseStatusException.class,
@@ -844,6 +870,8 @@ class TenantRlsIntegrationTest {
                     () -> catalog.update(TENANT_B, productId, duplicateSku));
             catalog.archive(application.tenantId(), productId);
             assertThat(catalog.publicProducts("nagpur-daily", null, 20).items()).isEmpty();
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> productImages.publicImage("nagpur-daily", "rice-5kg", cleanImage.id()));
 
             setAuthenticatedUser(USER_A, List.of());
             assertThrows(org.springframework.security.access.AccessDeniedException.class,

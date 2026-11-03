@@ -264,3 +264,7 @@ After DTOs are agreed, web/mobile shells and design components can progress alon
 # LSOS-023 status
 
 **Implemented:** V13 adds tenant-scoped variants, per-variant nonnegative inventory, and immutable attributable stock movements. Seller APIs create/list variants, read balances/history, and make reasoned stock adjustments. Adjustments use `SELECT ... FOR UPDATE` and update balance plus movement atomically; underflow and integer overflow are rejected. Checkout reservations/decrements remain in LSOS-027. PostGIS integration coverage verifies initial zero stock, adjustment history, underflow rollback, and cross-tenant denial.
+
+# LSOS-024 status
+
+**Implemented:** V14 adds tenant-scoped product-image metadata with generated UUID object keys, content signature/type, size, SHA-256, scan state, ordering, and creator. Direct multipart uploads are limited to 5 MiB and JPEG/PNG/WebP signatures. Storage is behind `FileStorage` with a path-constrained local adapter; the scanner is pluggable and defaults to `PENDING_SCAN`. Public bytes require a clean scan and approved/published shop/product state under RLS. Integration and unit tests cover media visibility, signature rejection, oversize files, and tenant denial. Production requires object-storage and scanner adapters before public activation.

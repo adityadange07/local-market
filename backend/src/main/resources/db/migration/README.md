@@ -8,3 +8,7 @@ Place versioned, forward-only Flyway SQL migrations here. `V1` verifies PostGIS 
 # Version 13 — Product variants and inventory
 
 `V13__product_variants_and_inventory.sql` adds tenant-owned product variants, nonnegative on-hand inventory, and append-only stock movements. Adjustments lock the inventory row and insert one attributable movement in the same transaction. Checkout reservations and order-driven stock changes are intentionally deferred to LSOS-027.
+
+# Version 14 — Product image metadata
+
+`V14__product_images.sql` records generated object keys, verified image type, size, digest, scan state, ordering, and actor. Forced RLS restricts seller reads/writes to their tenant; public reads require a clean scan result and a published product/store under an approved tenant. Object bytes live behind the `FileStorage` adapter, not in PostgreSQL.

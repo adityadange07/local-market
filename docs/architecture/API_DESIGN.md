@@ -76,3 +76,14 @@ Requests validate slug/SKU formats, positive INR minor-unit price, compare-at pr
 | GET | `/api/v1/seller/tenants/{tenantId}/variants/{variantId}/inventory/movements?limit=` | `StockMovementView[]` | `tenant.inventory.read` |
 
 Adjustment delta must be nonzero and reason nonblank (up to 240 characters). The service serializes adjustments with a row lock, rejects underflow/overflow, and commits quantity and attributable movement atomically. `409` reports an invalid stock transition; cross-tenant resources are not discoverable. Reservation and fulfillment movements are specified with checkout/order implementation.
+
+## Product image upload (V14)
+
+| Method | Path | Request / response | Access |
+|---|---|---|---|
+| GET | `/api/v1/seller/tenants/{tenantId}/products/{productId}/images` | `ProductImageView[]` | `tenant.catalog.read` |
+| POST | `/api/v1/seller/tenants/{tenantId}/products/{productId}/images` | `multipart/form-data` field `file` → `ProductImageView` | `tenant.catalog.manage`; max 5 MiB |
+| DELETE | `/api/v1/seller/tenants/{tenantId}/products/{productId}/images/{imageId}` | Empty response | `tenant.catalog.manage` |
+| GET | `/api/v1/marketplace/shops/{shopSlug}/products/{productSlug}/images/{imageId}` | Verified image bytes | Public only when image is clean and product/store are public |
+
+Upload content is identified from JPEG/PNG/WebP signatures; client MIME and filenames are ignored. Storage keys are generated UUIDs and are never returned. Unscanned content is private and the default scanner holds it in `PENDING_SCAN`; deployment must provide a malware-scanner adapter before public image activation. Oversize content returns `413`, unsupported signatures `415`, and unavailable/nonpublic images `404`.

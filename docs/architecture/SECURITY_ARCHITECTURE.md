@@ -49,6 +49,8 @@ Shop application submission installs the backend-generated tenant ID and `tenant
 
 Store profile writes first resolve the authenticated user's active tenant membership and `tenant.store.manage` permission for the supplied tenant selector; the selector alone never grants access. Store address, hours, and fulfillment tables use forced RLS and tenant/store composite foreign keys. Public reads require both an approved tenant and published store. Store publication is a transaction that verifies an address, all seven weekday entries, at least one open day, and a valid fulfillment method; the customer storefront returns no rows before that state.
 
+Product image uploads are limited to 5 MiB and JPEG/PNG/WebP magic signatures; file names and client-declared MIME types do not select storage keys or response types. UUID keys are tenant-prefixed and storage paths are normalized under a configured root. The default scanner marks uploads pending, and forced RLS/public download rules expose only clean images for published products and stores of approved tenants. Production must configure object storage and a malware scanner; pending media stays private.
+
 ## Security acceptance tests
 
 Test role denial, tenant A to tenant B object access, forged tenant IDs, missing/stale tenant context, pooled-connection context leakage, disabled memberships, refresh replay, OTP expiry/replay/throttle, admin MFA gate, upload spoof/oversize, CORS/CSRF configuration, webhook invalid signature/duplicate/replay, sensitive log redaction, and audited manual payment verification. External penetration testing and compliance/legal review remain pre-launch activities.

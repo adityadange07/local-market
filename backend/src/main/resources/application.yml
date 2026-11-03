@@ -3,6 +3,10 @@ spring:
     name: local-shop-os-api
   main:
     banner-mode: "off"
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
   datasource:
     url: ${DB_URL}
     username: ${DB_USERNAME}
@@ -24,6 +28,10 @@ spring:
         jdbc:
           time_zone: UTC
 localshop:
+  files:
+    storage-root: ${FILE_STORAGE_ROOT:/var/lib/localshop/files}
+    scanner:
+      mode: ${FILE_SCANNER_MODE:pending}
   identity:
     otp:
       hmac-secret: ${OTP_HMAC_SECRET}

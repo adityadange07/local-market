@@ -268,3 +268,11 @@ After DTOs are agreed, web/mobile shells and design components can progress alon
 # LSOS-024 status
 
 **Implemented:** V14 adds tenant-scoped product-image metadata with generated UUID object keys, content signature/type, size, SHA-256, scan state, ordering, and creator. Direct multipart uploads are limited to 5 MiB and JPEG/PNG/WebP signatures. Storage is behind `FileStorage` with a path-constrained local adapter; the scanner is pluggable and defaults to `PENDING_SCAN`. Public bytes require a clean scan and approved/published shop/product state under RLS. Integration and unit tests cover media visibility, signature rejection, oversize files, and tenant denial. Production requires object-storage and scanner adapters before public activation.
+
+# LSOS-025 status
+
+**Implemented:** Public nearby shop discovery uses PostGIS `ST_DWithin` and distance ordering; shop and product search support escaped substring queries, optional city/category filters, bounded pagination, deterministic ordering, and approved/published visibility predicates. Integration coverage verifies distance ordering/bounds, city and text filters, and exclusion of archived products. The GiST location index is reused; full-text indexes/cache are deferred pending a pilot-data query-plan baseline.
+
+# LSOS-026 status
+
+**Implemented:** V15 adds customer-owned soft-deletable addresses with optional coordinates and a unique active default, plus RLS-protected one-active-shop carts and cart items. V16 exposes active variants only for public products. Customer APIs manage addresses and a single-shop cart; quantities are bounded, tenant/product/variant ownership is enforced, shop switching returns `409`, prices are read live, and cart/address mutations serialize per customer. PostGIS integration coverage exercises address ownership/defaults, active variant discovery, cart price totals, quantity changes, single-shop enforcement, and clearing.

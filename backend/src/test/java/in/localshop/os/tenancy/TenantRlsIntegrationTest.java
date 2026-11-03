@@ -83,6 +83,13 @@ import in.localshop.os.inventory.VariantRequest;
 import in.localshop.os.files.FileStorage;
 import in.localshop.os.files.MalwareScanner;
 import in.localshop.os.files.ProductImageService;
+import in.localshop.os.marketplace.MarketplaceDiscoveryService;
+import in.localshop.os.marketplace.MarketplaceVariantService;
+import in.localshop.os.customer.CustomerAddressRequest;
+import in.localshop.os.customer.CustomerAddressService;
+import in.localshop.os.cart.AddCartItemRequest;
+import in.localshop.os.cart.CustomerCartService;
+import in.localshop.os.cart.UpdateCartItemRequest;
 import in.localshop.os.identity.SmsProvider;
 import in.localshop.os.identity.TokenResponse;
 
@@ -154,7 +161,7 @@ class TenantRlsIntegrationTest {
 
     @BeforeEach
     void seedTwoPrivateTenantsAndOnePublicTenant() {
-        migrationJdbc.execute("TRUNCATE TABLE product_images, stock_movements, inventory, product_variants, store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
+        migrationJdbc.execute("TRUNCATE TABLE customer_addresses, cart_items, carts, product_images, stock_movements, inventory, product_variants, store_addresses, store_hours, store_fulfillment_settings, audit_logs, "
                 + "admin_mfa_events, admin_mfa_recovery_codes, admin_mfa_credentials, refresh_tokens, auth_sessions, "
                 + "otp_rate_limits, otp_challenges, products, stores, tenant_members, tenants, user_roles, users");
 
@@ -756,6 +763,16 @@ class TenantRlsIntegrationTest {
         ProductCatalogService catalog = new ProductCatalogService(
                 runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
                 permissionAuthorization, auditEvents, clock);
+        MarketplaceDiscoveryService discovery = new MarketplaceDiscoveryService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource));
+        MarketplaceVariantService publicVariants = new MarketplaceVariantService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource));
+        CustomerAddressService customerAddresses = new CustomerAddressService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                permissionAuthorization, clock);
+        CustomerCartService customerCarts = new CustomerCartService(
+                runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
+                permissionAuthorization, clock);
         VariantInventoryService inventory = new VariantInventoryService(
                     runtimeJdbc, contextHolder, databaseContext, new DataSourceTransactionManager(runtimeDataSource),
                     permissionAuthorization, auditEvents, clock);
@@ -798,6 +815,21 @@ class TenantRlsIntegrationTest {
             var storefront = stores.publicStorefront("nagpur-daily");
             assertThat(storefront.displayName()).isEqualTo("Nagpur Daily Store");
             assertThat(storefront.address().postalCode()).isEqualTo("440012");
+            var nearbyShops = discovery.nearby(21.1458, 79.0882, 1000, 20, 0);
+            assertThat(nearbyShops.total()).isEqualTo(1);
+            assertThat(nearbyShops.items()).extracting("slug").containsExactly("nagpur-daily");
+            assertThat(nearbyShops.items().getFirst().distanceMeters()).isLessThan(1.0);
+            assertThat(discovery.nearby(21.1458 + 99.0 / 111_195.0, 79.0882, 100, 20, 0).total())
+                    .isEqualTo(1);
+            assertThat(discovery.nearby(22.0, 80.0, 1000, 20, 0).items()).isEmpty();
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> discovery.nearby(91, 79, 1000, 20, 0));
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> discovery.nearby(21, 79, 50_001, 20, 0));
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> discovery.searchShops("x", null, 20, 0));
+            assertThat(discovery.searchShops("daily", "Nagpur", 20, 0).items())
+                    .extracting("slug").containsExactly("nagpur-daily");
             assertThat(storefront.address().latitude()).isCloseTo(21.1458, org.assertj.core.data.Offset.offset(0.0001));
             assertThat(storefront.fulfillment().deliveryRadiusMeters()).isEqualTo(5000);
             assertThat(storefront.hours()).hasSize(7);
@@ -813,6 +845,8 @@ class TenantRlsIntegrationTest {
             UUID productId = product.id();
             var variant = inventory.createVariant(application.tenantId(), productId,
                     new VariantRequest("DEFAULT", "5 kg bag", null, null));
+            assertThat(publicVariants.variants("nagpur-daily", "rice-5kg"))
+                    .extracting("id").containsExactly(variant.id());
             assertThat(inventory.inventory(application.tenantId(), variant.id()).quantityOnHand()).isZero();
             var adjusted = inventory.adjust(application.tenantId(), variant.id(),
                     new StockAdjustmentRequest(12, "Initial shelf count"));
@@ -851,6 +885,9 @@ class TenantRlsIntegrationTest {
                     () -> inventory.inventory(TENANT_B, variant.id()));
             assertThat(catalog.publicProducts("nagpur-daily", "groceries", 20).items())
                     .extracting("slug").containsExactly("rice-5kg");
+            var productSearch = discovery.searchProducts("rice", "groceries", "Nagpur", 20, 0);
+            assertThat(productSearch.total()).isEqualTo(1);
+            assertThat(productSearch.items()).extracting("productSlug").containsExactly("rice-5kg");
             byte[] pngSignature = new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
             var pendingImage = productImages.upload(application.tenantId(), productId, pngSignature);
             assertThat(pendingImage.scanStatus()).isEqualTo("PENDING_SCAN");
@@ -862,6 +899,56 @@ class TenantRlsIntegrationTest {
                     .containsExactly(pngSignature);
             assertThrows(org.springframework.security.access.AccessDeniedException.class,
                     () -> productImages.sellerImages(TENANT_B, productId));
+
+            setAuthenticatedUser(USER_C, List.of());
+            var homeAddress = customerAddresses.create(new CustomerAddressRequest("Home", "Customer C", "+15550000003",
+                    "10 Lake Road", null, "Near park", "Dharampeth", "Nagpur", "Maharashtra", "440010",
+                    21.1458, 79.0882, true));
+            assertThat(homeAddress.defaultAddress()).isTrue();
+            var officeAddress = customerAddresses.create(new CustomerAddressRequest("Office", "Customer C", null,
+                    "20 Market Road", "Floor 2", null, "Sitabuldi", "Nagpur", "Maharashtra", "440012",
+                    null, null, false));
+            assertThat(customerAddresses.list()).hasSize(2);
+            officeAddress = customerAddresses.update(officeAddress.id(), new CustomerAddressRequest("Office", "Customer C",
+                    null, "20 Market Road", "Floor 2", null, "Sitabuldi", "Nagpur", "Maharashtra", "440012",
+                    null, null, true));
+            assertThat(officeAddress.defaultAddress()).isTrue();
+            assertThat(customerAddresses.list()).filteredOn(address -> address.defaultAddress()).hasSize(1);
+            setAuthenticatedUser(USER_A, List.of());
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> customerAddresses.update(homeAddress.id(), new CustomerAddressRequest("Home", "Customer C",
+                            "+15550000003", "10 Lake Road", null, "Near park", "Dharampeth", "Nagpur",
+                            "Maharashtra", "440010", 21.1458, 79.0882, true)));
+
+            setAuthenticatedUser(USER_C, List.of());
+            var emptyCart = customerCarts.view();
+            assertThat(emptyCart.id()).isNull();
+            var cart = customerCarts.add(new AddCartItemRequest("nagpur-daily", variant.id(), 2));
+            assertThat(cart.items()).hasSize(1);
+            assertThat(cart.subtotalMinor()).isEqualTo(24000);
+            UUID cartItemId = cart.items().getFirst().id();
+            cart = customerCarts.updateItem(cartItemId, new UpdateCartItemRequest(3));
+            assertThat(cart.subtotalMinor()).isEqualTo(36000);
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> customerCarts.updateItem(cartItemId, new UpdateCartItemRequest(101)));
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> customerCarts.add(new AddCartItemRequest("nagpur-daily", variant.id(), 98)));
+            var anotherProduct = catalog.create(TENANT_C, new ProductRequest(
+                    groceryCategory, "SPICE-001", "spice-box", "Spice box", null, 5000, null));
+            catalog.publish(TENANT_C, anotherProduct.id());
+            var otherShopVariant = inventory.createVariant(TENANT_C, anotherProduct.id(),
+                    new VariantRequest("STANDARD", "Standard box", null, null));
+            assertThrows(org.springframework.web.server.ResponseStatusException.class,
+                    () -> customerCarts.add(new AddCartItemRequest("shop-c", otherShopVariant.id(), 1)));
+            customerCarts.clear();
+            assertThat(customerCarts.view().id()).isNull();
+            assertThat(customerCarts.add(new AddCartItemRequest("shop-c", otherShopVariant.id(), 1)).shopSlug())
+                    .isEqualTo("shop-c");
+            customerCarts.clear();
+            customerAddresses.delete(officeAddress.id());
+            assertThat(customerAddresses.list()).hasSize(1);
+
+            setAuthenticatedUser(USER_A, List.of());
             var duplicateSku = new ProductRequest(
                     groceryCategory, "RICE-5KG", "basmati-5kg", "Basmati rice", null, 15000, null);
             assertThrows(org.springframework.web.server.ResponseStatusException.class,
@@ -870,6 +957,7 @@ class TenantRlsIntegrationTest {
                     () -> catalog.update(TENANT_B, productId, duplicateSku));
             catalog.archive(application.tenantId(), productId);
             assertThat(catalog.publicProducts("nagpur-daily", null, 20).items()).isEmpty();
+            assertThat(discovery.searchProducts("rice", null, null, 20, 0).items()).isEmpty();
             assertThrows(org.springframework.web.server.ResponseStatusException.class,
                     () -> productImages.publicImage("nagpur-daily", "rice-5kg", cleanImage.id()));
 

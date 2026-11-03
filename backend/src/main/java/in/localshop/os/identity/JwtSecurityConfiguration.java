@@ -99,11 +99,13 @@ public class JwtSecurityConfiguration {
                                 "/swagger-ui/**", "/swagger-ui.html").permitAll()
                         .requestMatchers("/api/v1/auth/tokens/revoke-device",
                                 "/api/v1/auth/admin/mfa/**", "/api/v1/seller/applications/**",
+                                "/api/v1/customer/**",
                                 "/api/v1/seller/tenants/*/store", "/api/v1/seller/tenants/*/store/**",
                                 "/api/v1/seller/tenants/*/products", "/api/v1/seller/tenants/*/products/**",
                                 "/api/v1/seller/tenants/*/variants/**",
                                 "/api/v1/admin/shop-applications/**").authenticated()
-                        .requestMatchers("/api/v1/marketplace/shops/**", "/api/v1/marketplace/categories")
+                        .requestMatchers("/api/v1/marketplace/shops/**", "/api/v1/marketplace/categories",
+                                "/api/v1/marketplace/products/search")
                         .permitAll()
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(Customizer.withDefaults()))

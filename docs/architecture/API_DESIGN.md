@@ -87,3 +87,30 @@ Adjustment delta must be nonzero and reason nonblank (up to 240 characters). The
 | GET | `/api/v1/marketplace/shops/{shopSlug}/products/{productSlug}/images/{imageId}` | Verified image bytes | Public only when image is clean and product/store are public |
 
 Upload content is identified from JPEG/PNG/WebP signatures; client MIME and filenames are ignored. Storage keys are generated UUIDs and are never returned. Unscanned content is private and the default scanner holds it in `PENDING_SCAN`; deployment must provide a malware-scanner adapter before public image activation. Oversize content returns `413`, unsupported signatures `415`, and unavailable/nonpublic images `404`.
+
+## Marketplace discovery (LSOS-025)
+
+| Method | Path | Request / response | Access |
+|---|---|---|---|
+| GET | `/api/v1/marketplace/shops/nearby?latitude=&longitude=&radiusMeters=&limit=&offset=` | `MarketplaceSearchPage<NearbyShopView>` with distance in meters | Public; radius 100–50,000 m |
+| GET | `/api/v1/marketplace/shops/search?q=&city=&limit=&offset=` | `MarketplaceSearchPage<ShopSearchResult>` | Public; query 2–100 chars |
+| GET | `/api/v1/marketplace/products/search?q=&category=&city=&limit=&offset=` | `MarketplaceSearchPage<ProductSearchResult>` | Public; query 2–100 chars |
+
+All discovery results require an approved tenant and published store; product results also require a published product and active category. `limit` is 1–100 and `offset` 0–10,000. Search treats wildcard characters literally and sorts deterministically. Invalid coordinates, ranges, or filters return `400`; results expose only storefront fields.
+
+## Customer addresses and cart (LSOS-026)
+
+| Method | Path | Request / response | Access |
+|---|---|---|---|
+| GET | `/api/v1/customer/addresses` | `CustomerAddressView[]` | `customer.address.read` |
+| POST | `/api/v1/customer/addresses` | `CustomerAddressRequest` → `CustomerAddressView` | `customer.address.write` |
+| PUT | `/api/v1/customer/addresses/{addressId}` | `CustomerAddressRequest` → `CustomerAddressView` | Owner only; cross-owner result is `404` |
+| DELETE | `/api/v1/customer/addresses/{addressId}` | Soft delete | Owner only |
+| GET | `/api/v1/customer/cart` | `CartView` (empty view when absent) | `customer.cart.read` |
+| POST | `/api/v1/customer/cart/items` | `{shopSlug, variantId, quantity}` → `CartView` | `customer.cart.write` |
+| PUT | `/api/v1/customer/cart/items/{itemId}` | `{quantity}` → `CartView` | Active cart owner |
+| DELETE | `/api/v1/customer/cart/items/{itemId}` | `CartView` | Active cart owner |
+| DELETE | `/api/v1/customer/cart` | Abandon active cart and return empty view | `customer.cart.write` |
+| GET | `/api/v1/marketplace/shops/{shopSlug}/products/{productSlug}/variants` | Active `PublicVariantView[]`, with current prices and no stock counts | Public |
+
+Address labels/recipient/address fields are validated; optional coordinates must be a valid pair. The first saved address becomes default, and updates serialize default changes. Cart additions require an approved/published shop and active published variant; quantities are 1–100. One active cart is allowed per customer and cannot mix shops (`409` until cleared). Item prices are current product/variant prices; checkout revalidation remains mandatory.

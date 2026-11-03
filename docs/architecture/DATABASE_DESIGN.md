@@ -104,3 +104,11 @@ The global `categories` taxonomy is seeded with stable UUIDs and active slugs. `
 ## V14: Product image metadata
 
 `product_images` stores product/tenant ownership, generated storage key, signature-verified content type, bounded byte size, SHA-256 digest, scan state, order, and creator. Object data is kept in the configured storage adapter. The default scanner leaves files `PENDING_SCAN`; only `CLEAN` files of published products on published stores of approved tenants are public under RLS. Rejected/unscanned files remain unavailable publicly.
+
+## Marketplace discovery queries (LSOS-025)
+
+Nearby discovery uses the existing GiST index on `store_addresses.location` with `ST_DWithin` over geography and computes `ST_Distance` for ordering. Search joins only published stores with approved tenants and configured fulfillment/address data; product search also filters published products and active categories. Existing tenant/status/category/product and public storefront indexes support the joins. Measure query plans on pilot data before adding text-search extensions or cache layers.
+
+## V15–V16: Customer addresses and carts
+
+`customer_addresses` is user-owned rather than tenant-owned; it supports soft deletion, optional PostGIS location, and at most one active default address per customer. `carts` references one tenant/store and one customer; a partial unique index permits only one `ACTIVE` cart per customer. `cart_items` references variants through a tenant-composite FK and caps quantity at 100. Advisory transaction locks serialize per-customer cart/default-address mutations; RLS enforces the customer identity on every read/write. Prices are read from current product/variant records and recomputed for cart responses; checkout must revalidate prices, publication, address, and stock.

@@ -12,3 +12,7 @@ Place versioned, forward-only Flyway SQL migrations here. `V1` verifies PostGIS 
 # Version 14 — Product image metadata
 
 `V14__product_images.sql` records generated object keys, verified image type, size, digest, scan state, ordering, and actor. Forced RLS restricts seller reads/writes to their tenant; public reads require a clean scan result and a published product/store under an approved tenant. Object bytes live behind the `FileStorage` adapter, not in PostgreSQL.
+
+# Versions 15–16 — Customer addresses and carts
+
+`V15__customer_addresses_and_carts.sql` adds owner-scoped customer addresses, one active single-shop cart per customer, and cart items constrained to the cart tenant and product variant. `V16__public_product_variant_reads.sql` permits public/customer reads of active variants only when their product, store, and tenant are public. Both migrations force RLS and grant only the runtime operations required by the APIs.
